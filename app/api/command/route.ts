@@ -1,4 +1,3 @@
-// app/api/command/route.ts
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -11,20 +10,43 @@ function checkAuth(req: NextRequest) {
   return sent === adminPass;
 }
 
+interface CommandBody {
+  cmd?: string;
+  arg?: string | number;
+}
+
+interface ControlState {
+  paused: boolean;
+  volume: number;   // 0..100
+  skipSeq: number;  // incrémenté pour signaler un skip
+  updatedAt?: Date;
+}
+
 export async function POST(req: NextRequest) {
   if (!checkAuth(req)) {
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
-  let body: any = {};
-  try { body = await req.json(); } catch {}
+  let body: CommandBody = {};
+  try {
+    body = (await req.json()) as CommandBody;
+  } catch {
+    // body reste {}
+  }
 
-  const cmd = String(body?.cmd || "").toLowerCase();
-  const arg = body?.arg;
+  const cmd = (body.cmd ?? "").toLowerCase();
+  const arg = body.arg;
 
   const controlRef = CONTROL();
   const snap = await controlRef.get();
-  const control = snap.exists ? snap.data()! : { paused: false, volume: 80, skipSeq: 0 };
+
+  // Normaliser le doc existant sans 'any'
+  const existing = snap.exists ? (snap.data() as Record<string, unknown>) : {};
+  const control: ControlState = {
+    paused: Boolean(existing.paused ?? false),
+    volume: Number(existing.volume ?? 80),
+    skipSeq: Number(existing.skipSeq ?? 0),
+  };
 
   if (cmd === "pause") control.paused = true;
   else if (cmd === "resume") control.paused = false;
@@ -36,7 +58,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unknown command" }, { status: 400 });
   }
 
-  (control as any).updatedAt = new Date();
+  control.updatedAt = new Date();
   await controlRef.set(control, { merge: true });
+
   return NextResponse.json({ ok: true, control });
 }

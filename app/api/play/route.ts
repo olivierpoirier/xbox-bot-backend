@@ -1,3 +1,4 @@
+// app/api/play/route.ts
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -23,7 +24,9 @@ export async function POST(req: NextRequest) {
   let body: PlayBody = {};
   try {
     body = (await req.json()) as PlayBody;
-  } catch {}
+  } catch {
+    // body vide -> gestion plus bas
+  }
 
   const url = String(body.url ?? "").trim();
   const addedBy = String(body.addedBy ?? "anon").slice(0, 64);
@@ -36,7 +39,7 @@ export async function POST(req: NextRequest) {
     url,
     addedBy,
     status: "queued" as const,
-    createdAt: new Date(),
+    createdAt: new Date(), // côté client worker tu peux convertir en Timestamp si besoin
   };
 
   const ref = await QUEUE().add(doc);

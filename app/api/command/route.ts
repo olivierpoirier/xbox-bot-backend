@@ -1,3 +1,4 @@
+// app/api/command/route.ts
 export const runtime = "nodejs";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -17,8 +18,8 @@ interface CommandBody {
 
 interface ControlState {
   paused: boolean;
-  volume: number;   // 0..100
-  skipSeq: number;  // incrémenté pour signaler un skip
+  volume: number;  // 0..100
+  skipSeq: number; // incrémenté pour signaler un skip
   updatedAt?: Date;
 }
 
@@ -40,7 +41,6 @@ export async function POST(req: NextRequest) {
   const controlRef = CONTROL();
   const snap = await controlRef.get();
 
-  // Normaliser le doc existant sans 'any'
   const existing = snap.exists ? (snap.data() as Record<string, unknown>) : {};
   const control: ControlState = {
     paused: Boolean(existing.paused ?? false),

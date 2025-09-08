@@ -1,3 +1,4 @@
+// app/api/queue/route.ts
 export const runtime = "nodejs";
 
 import { NextResponse } from "next/server";
@@ -25,7 +26,6 @@ export async function GET() {
 
   const queue = queuedSnap.docs.map((d) => {
     const data = d.data() as Record<string, unknown>;
-    // mise en forme sans any
     const item: QueueItem = {
       url: String(data.url ?? ""),
       addedBy: typeof data.addedBy === "string" ? data.addedBy : undefined,

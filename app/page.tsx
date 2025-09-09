@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent } from 'react';
 
 type Control = { paused?: boolean; volume?: number; skipSeq?: number };
 type Now = { url?: string; title?: string; addedBy?: string; startedAt?: unknown };
@@ -11,25 +12,31 @@ type QueueItem = {
   status: 'queued' | 'playing' | 'done' | 'error';
   createdAt?: unknown;
 };
-
-type QueueResponse = {
-  ok: boolean;
-  now: Now | null;
-  queue: QueueItem[];
-  control: Control | null;
-};
+type QueueResponse = { ok: boolean; now: Now | null; queue: QueueItem[]; control: Control | null };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '';
+
+/** Util: extrait la première URL plausible d’un bloc de texte, sinon renvoie le premier mot trim */
+const pickUrlLike = (raw: string): string => {
+  const t = (raw || '').trim();
+  const m = t.match(/https?:\/\/[^\s<>"']+/i);
+  if (m) return m[0];
+  const first = t.split(/\s+/)[0] ?? '';
+  if (/^(www\.|youtube\.com|youtu\.be|soundcloud\.com|open\.spotify\.com)\//i.test(first)) {
+    return `https://${first}`;
+  }
+  return first;
+};
 
 export default function Home() {
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
   const [adminPass, setAdminPass] = useState('');
   const [state, setState] = useState<QueueResponse | null>(null);
-  const [busy, setBusy] = useState<string | null>(null); // 'play' | 'pause' | 'resume' | 'skip' | 'clear' | 'volume'
+  const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string>('');
 
-  // load persisted fields
+  // Persistance locale
   useEffect(() => {
     try {
       const n = localStorage.getItem('xmb_name'); if (n) setName(n);
@@ -45,7 +52,7 @@ export default function Home() {
     return h;
   }, [adminPass]);
 
-  // refresh loop
+  // Rafraîchissement
   const refresh = useCallback(async () => {
     try {
       const r = await fetch(`${API_BASE}/api/queue`, { cache: 'no-store' });
@@ -61,17 +68,41 @@ export default function Home() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  // helpers
+  // Aides
   const volume = state?.control?.volume ?? 80;
   const paused = state?.control?.paused ?? false;
 
-  // actions
+  // Coller programmatique
+  const pasteInto = useCallback(async (setter: (s: string) => void, transform?: (s: string) => string) => {
+    try {
+      const text = await navigator.clipboard.readText();
+      let v = text ?? '';
+      if (transform) v = transform(v);
+      setter(v);
+      setToast('Collé depuis le presse-papier ✅');
+    } catch {
+      setToast('Impossible de lire le presse-papier. Autorise l’accès ou colle manuellement.');
+    }
+  }, []);
+
+  // Drag & drop d’URL
+  const onDropUrl = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const data = e.dataTransfer.getData('text') || '';
+    if (data) setUrl(pickUrlLike(data));
+  }, []);
+  const onDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  }, []);
+
+  // Actions
   const addToQueue = useCallback(async () => {
-    if (!/^https?:\/\//i.test(url.trim())) { setToast('URL invalide'); return; }
+    const u = pickUrlLike(url);
+    if (!/^https?:\/\//i.test(u)) { setToast('URL invalide'); return; }
     setBusy('play');
     try {
       const r = await fetch(`${API_BASE}/api/play`, {
-        method: 'POST', headers, body: JSON.stringify({ url: url.trim(), addedBy: name || 'anon' }),
+        method: 'POST', headers, body: JSON.stringify({ url: u, addedBy: name || 'anon' }),
       });
       const data = await r.json();
       if (!r.ok || !data.ok) setToast(data?.error || 'Échec de l’ajout');
@@ -85,8 +116,7 @@ export default function Home() {
     setToast('');
     try {
       const r = await fetch(`${API_BASE}/api/command`, {
-        method: 'POST', headers,
-        body: JSON.stringify(arg === undefined ? { cmd } : { cmd, arg }),
+        method: 'POST', headers, body: JSON.stringify(arg === undefined ? { cmd } : { cmd, arg }),
       });
       const data = await r.json();
       if (!r.ok || !data.ok) setToast(data?.error || `Commande "${cmd}" refusée`);
@@ -108,48 +138,106 @@ export default function Home() {
 
   const onVolume = useCallback((v: number) => { sendCommand('volume', v); }, [sendCommand]);
 
-  const onEnterAdd = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+  // Raccourcis & collage natif
+  const onEnterAdd = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') addToQueue();
   }, [addToQueue]);
 
+  const handlePasteUrl = useCallback((e: ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData?.getData('text') || '';
+    if (text) {
+      e.preventDefault();
+      setUrl(pickUrlLike(text));
+    }
+  }, []);
+  const handlePasteText = useCallback(
+    (setter: (s: string) => void) => (e: ClipboardEvent<HTMLInputElement>) => {
+      const text = e.clipboardData?.getData('text') || '';
+      if (text) {
+        e.preventDefault();
+        setter(text.trim());
+      }
+    },
+    []
+  );
+
   return (
-    <main style={sx.page} className="xmb">
-      {/* Responsive styles */}
+    <main style={sx.page} className="xmb" onDrop={onDropUrl} onDragOver={onDragOver}>
       <style>{responsiveCss}</style>
 
       <div style={sx.header}>
         <h1 style={sx.title}>🎮 Xbox Music Bot</h1>
-        <p style={sx.subtitle}>Ajoute des liens (YouTube, MP3, radio…). Le bot joue sur ton PC (Voicemeeter → Xbox).</p>
+        <p style={sx.subtitle}>Colle un lien YouTube/MP3/radio. Lecture locale (Voicemeeter → Xbox).</p>
       </div>
 
       <div className="xmb-form" style={sx.formRow}>
-        <input
-          style={sx.input}
-          className="xmb-input"
-          placeholder="https://youtube.com/watch?v=..."
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={onEnterAdd}
-          inputMode="url"
-          aria-label="URL à jouer"
-        />
-        <input
-          style={sx.input}
-          className="xmb-input"
-          placeholder="Ton pseudo (optionnel)"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          aria-label="Ton pseudo"
-        />
-        <input
-          style={sx.input}
-          className="xmb-input"
-          placeholder="Mot de passe admin (si requis)"
-          type="password"
-          value={adminPass}
-          onChange={(e) => setAdminPass(e.target.value)}
-          aria-label="Mot de passe administrateur"
-        />
+        <div style={{ display: 'grid', gap: 8 }}>
+          <input
+            style={sx.input}
+            className="xmb-input"
+            placeholder="https://youtube.com/watch?v=..."
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={onEnterAdd}
+            onPaste={handlePasteUrl}
+            inputMode="url"
+            aria-label="URL à jouer"
+            autoCorrect="off"
+            autoCapitalize="none"
+          />
+          <button
+            type="button"
+            style={{ ...sx.btn, ...sx.btnSmall }}
+            onClick={() => pasteInto(setUrl, pickUrlLike)}
+            aria-label="Coller une URL"
+          >
+            📋 Coller l’URL
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gap: 8 }}>
+          <input
+            style={sx.input}
+            className="xmb-input"
+            placeholder="Ton pseudo (optionnel)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onPaste={handlePasteText(setName)}
+            aria-label="Ton pseudo"
+            autoCapitalize="words"
+          />
+          <button
+            type="button"
+            style={{ ...sx.btn, ...sx.btnSmall }}
+            onClick={() => pasteInto(setName)}
+            aria-label="Coller le pseudo"
+          >
+            📋 Coller le pseudo
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gap: 8 }}>
+          <input
+            style={sx.input}
+            className="xmb-input"
+            placeholder="Mot de passe admin (si requis)"
+            type="password"
+            value={adminPass}
+            onChange={(e) => setAdminPass(e.target.value)}
+            onPaste={handlePasteText(setAdminPass)}
+            aria-label="Mot de passe administrateur"
+            autoComplete="current-password"
+          />
+          <button
+            type="button"
+            style={{ ...sx.btn, ...sx.btnSmall }}
+            onClick={() => pasteInto(setAdminPass)}
+            aria-label="Coller le mot de passe admin"
+          >
+            📋 Coller le mot de passe
+          </button>
+        </div>
+
         <button
           className="xmb-btn-add"
           style={{ ...sx.btn, ...(busy ? sx.btnDisabled : sx.btnPrimary) }}
@@ -162,18 +250,24 @@ export default function Home() {
       </div>
 
       <div className="xmb-grid" style={sx.grid}>
-        {/* Col gauche : now + controls */}
         <section style={sx.card}>
           <h2 style={sx.h2}>Lecture en cours</h2>
           {state?.now?.url ? (
             <div style={sx.nowBox}>
               <div style={sx.nowTitle}>
-                <a href={state.now.url} target="_blank" rel="noreferrer" style={{ color: '#93c5fd', textDecoration: 'none', wordBreak: 'break-word' }}>
+                <a
+                  href={state.now.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: '#93c5fd', textDecoration: 'none', wordBreak: 'break-word' }}
+                >
                   {state.now.title || state.now.url}
                 </a>
               </div>
               {state.now.addedBy ? <div style={sx.mutedSmall}>par {state.now.addedBy}</div> : null}
-              <div style={sx.mutedSmall}>Volume : <b>{volume}%</b></div>
+              <div style={sx.mutedSmall}>
+                Volume : <b>{volume}%</b>
+              </div>
               {paused && <div style={sx.badgePaused}>⏸ En pause</div>}
             </div>
           ) : (
@@ -183,7 +277,7 @@ export default function Home() {
           <div style={sx.row} className="xmb-controls-row">
             <button
               className="xmb-ctrl"
-              style={{ ...sx.btn, ...(busy ? sx.btnDisabled : sx.btn) }}
+              style={{ ...sx.btn }}
               disabled={!!busy}
               onClick={() => sendCommand(paused ? 'resume' : 'pause')}
               title={paused ? 'Reprendre' : 'Mettre en pause'}
@@ -193,7 +287,7 @@ export default function Home() {
             </button>
             <button
               className="xmb-ctrl"
-              style={{ ...sx.btn, ...(busy ? sx.btnDisabled : sx.btn) }}
+              style={{ ...sx.btn }}
               disabled={!!busy}
               onClick={() => sendCommand('skip')}
               title="Passer à la suivante"
@@ -203,7 +297,7 @@ export default function Home() {
             </button>
             <button
               className="xmb-ctrl"
-              style={{ ...sx.btn, ...(busy ? sx.btnDisabled : sx.btnDanger) }}
+              style={{ ...sx.btn, ...sx.btnDanger }}
               disabled={!!busy}
               onClick={clearQueue}
               title="Vider la file"
@@ -214,10 +308,13 @@ export default function Home() {
           </div>
 
           <div style={{ marginTop: 16 }}>
-            <label style={sx.label}>Volume : <b>{volume}%</b></label>
+            <label style={sx.label}>
+              Volume : <b>{volume}%</b>
+            </label>
             <input
               type="range"
-              min={0} max={100}
+              min={0}
+              max={100}
               value={volume}
               onChange={(e) => onVolume(parseInt(e.target.value, 10))}
               style={sx.slider}
@@ -227,7 +324,6 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Col droite : queue */}
         <section style={sx.card}>
           <h2 style={sx.h2}>File d’attente</h2>
           {state?.queue?.length ? (
@@ -236,7 +332,12 @@ export default function Home() {
                 <div key={it.id} style={sx.queueItem}>
                   <div style={sx.queueTitle}>
                     <span style={sx.idx}>{i + 1}.</span>{' '}
-                    <a href={it.url} target="_blank" rel="noreferrer" style={{ color: '#c7d2fe', textDecoration: 'none', wordBreak: 'break-word' }}>
+                    <a
+                      href={it.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: '#c7d2fe', textDecoration: 'none', wordBreak: 'break-word' }}
+                    >
                       {it.url}
                     </a>
                   </div>
@@ -252,7 +353,7 @@ export default function Home() {
         </section>
       </div>
 
-      {/* Control bar collante sur mobile */}
+      {/* Barre rapide mobile */}
       <div className="xmb-sticky-controls">
         <button
           disabled={!!busy}
@@ -262,12 +363,7 @@ export default function Home() {
         >
           {paused ? '▶' : '⏸'}
         </button>
-        <button
-          disabled={!!busy}
-          onClick={() => sendCommand('skip')}
-          className="xmb-sticky-btn"
-          aria-label="Suivante"
-        >
+        <button disabled={!!busy} onClick={() => sendCommand('skip')} className="xmb-sticky-btn" aria-label="Suivante">
           ⏭
         </button>
         <button
@@ -280,7 +376,11 @@ export default function Home() {
         </button>
       </div>
 
-      {toast ? <div style={sx.toast} onAnimationEnd={() => setToast('')}>{toast}</div> : null}
+      {toast ? (
+        <div style={sx.toast} onAnimationEnd={() => setToast('')}>
+          {toast}
+        </div>
+      ) : null}
 
       <footer style={sx.footer}>
         <span style={sx.mutedSmall}>
@@ -291,18 +391,53 @@ export default function Home() {
   );
 }
 
-const sx: Record<string, React.CSSProperties> = {
+/* ---------- Typage strict des styles ---------- */
+type StyleMap = {
+  page: CSSProperties;
+  header: CSSProperties;
+  title: CSSProperties;
+  subtitle: CSSProperties;
+
+  formRow: CSSProperties;
+  input: CSSProperties;
+
+  grid: CSSProperties;
+  card: CSSProperties;
+  h2: CSSProperties;
+
+  row: CSSProperties;
+  label: CSSProperties;
+
+  btn: CSSProperties;
+  btnSmall: CSSProperties;
+  btnPrimary: CSSProperties;
+  btnDanger: CSSProperties;
+  btnDisabled: CSSProperties;
+
+  nowBox: CSSProperties;
+  nowTitle: CSSProperties;
+  badgePaused: CSSProperties;
+
+  queueItem: CSSProperties;
+  queueTitle: CSSProperties;
+  idx: CSSProperties;
+  muted: CSSProperties;
+  mutedSmall: CSSProperties;
+
+  slider: CSSProperties;
+
+  toast: CSSProperties;
+  footer: CSSProperties;
+};
+
+const sx: StyleMap = {
   page: { maxWidth: 1100, margin: '0 auto', padding: 20, fontFamily: 'ui-sans-serif,system-ui,Segoe UI,Roboto', color: '#e5e7eb', background: '#0b1220' },
   header: { marginBottom: 14 },
   title: { margin: 0, fontSize: 28, lineHeight: 1.2, color: '#e5e7eb' },
   subtitle: { margin: '6px 0 0', color: '#94a3b8' },
 
   formRow: { display: 'grid', gridTemplateColumns: '2fr 1.2fr 1.2fr auto', gap: 10, marginBottom: 14 },
-  input: {
-    border: '1px solid #334155', borderRadius: 12, padding: '12px 14px',
-    background: '#0f172a', color: '#e2e8f0', fontSize: 16, // 16px évite le zoom iOS
-    outline: 'none'
-  },
+  input: { border: '1px solid #334155', borderRadius: 12, padding: '12px 14px', background: '#0f172a', color: '#e2e8f0', fontSize: 16, outline: 'none' },
 
   grid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 },
   card: { background: '#0b1220', border: '1px solid #1f2937', borderRadius: 14, padding: 16, boxShadow: '0 1px 2px rgba(0,0,0,.3)', color: '#e5e7eb' },
@@ -312,9 +447,10 @@ const sx: Record<string, React.CSSProperties> = {
   label: { color: '#cbd5e1', display: 'block', marginBottom: 6 },
 
   btn: { background: '#1f2937', border: '1px solid #374151', borderRadius: 12, padding: '12px 16px', cursor: 'pointer', fontWeight: 700, color: '#e5e7eb' },
+  btnSmall: { padding: '8px 10px', fontSize: 14 },
   btnPrimary: { background: '#2563eb', border: '1px solid #1e40af', color: 'white' },
   btnDanger: { background: '#ef4444', border: '1px solid #991b1b', color: 'white' },
-  btnDisabled: { opacity: .6, cursor: 'not-allowed' },
+  btnDisabled: { opacity: 0.6, cursor: 'not-allowed' },
 
   nowBox: { padding: 12, border: '1px solid #334155', borderRadius: 12, background: '#0f172a' },
   nowTitle: { fontWeight: 700, marginBottom: 4, lineHeight: 1.25 },
@@ -326,124 +462,81 @@ const sx: Record<string, React.CSSProperties> = {
   muted: { color: '#94a3b8' },
   mutedSmall: { color: '#94a3b8', fontSize: 12 },
 
-  slider: { width: '100%', height: 36 }, // height manipulée via CSS aussi
+  slider: { width: '100%', height: 36 },
 
   toast: {
     position: 'fixed', left: '50%', bottom: 18, transform: 'translateX(-50%)',
     background: '#10b981', color: '#052e1b', border: '1px solid #065f46',
-    padding: '10px 14px', borderRadius: 12, boxShadow: '0 8px 30px rgba(0,0,0,.25)',
-    animation: 'fadeOut 2.8s forwards', zIndex: 50
+    padding: '10px 14px', borderRadius: 12, boxShadow: '0 8px 30px rgba(0,0,0,.25)', animation: 'fadeOut 2.8s forwards', zIndex: 50
   },
   footer: { textAlign: 'center', marginTop: 16 }
 };
 
 const responsiveCss = `
-/* Réglages généraux */
+/* Base */
 .xmb .xmb-input { width: 100%; }
-
-/* Grille desktop par défaut -> override en mobile */
 .xmb .xmb-grid { grid-template-columns: 1fr 1fr; }
-
-/* Formulaire desktop par défaut -> override en mobile */
 .xmb .xmb-form { grid-template-columns: 2fr 1.2fr 1.2fr auto; }
-
-/* Bouton d'ajout en mobile = full width */
 .xmb .xmb-btn-add { width: auto; }
+.xmb .xmb-sticky-controls { display: none; }
 
-/* Sticky control bar (mobile uniquement — hidden par défaut) */
-.xmb .xmb-sticky-controls {
-  display: none;
-}
-
-/* Slider: rendre le thumb et la track plus gros pour le doigt */
+/* Slider: plus confortable au doigt */
 .xmb .xmb-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  height: 6px;
-  background: #334155;
-  border-radius: 999px;
+  -webkit-appearance: none; appearance: none; height: 6px; background: #334155; border-radius: 999px;
 }
 .xmb .xmb-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 22px; height: 22px;
-  border-radius: 50%;
+  -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%;
   background: #2563eb; border: 2px solid #1e40af;
 }
 .xmb .xmb-slider::-moz-range-thumb {
-  width: 22px; height: 22px;
-  border-radius: 50%;
-  background: #2563eb; border: 2px solid #1e40af;
+  width: 22px; height: 22px; border-radius: 50%; background: #2563eb; border: 2px solid #1e40af;
 }
 
-/* ========= Breakpoint ≤ 720px ========= */
+/* ≤ 720px */
 @media (max-width: 720px) {
-  .xmb { padding-bottom: 64px; } /* espace pour la barre collante */
+  .xmb { padding-bottom: 64px; }
 
-  .xmb .xmb-grid {
-    grid-template-columns: 1fr; /* 2 -> 1 colonne */
-    gap: 12px;
-  }
+  .xmb .xmb-grid { grid-template-columns: 1fr; gap: 12px; }
 
   .xmb .xmb-form {
-    grid-template-columns: 1fr; /* empiler les inputs + bouton */
-    gap: 8px;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
   }
-
   .xmb .xmb-btn-add {
+    grid-column: 1 / -1;
     width: 100%;
     padding: 14px 16px;
     font-size: 16px;
   }
 
-  .xmb .xmb-controls-row {
-    gap: 8px;
-  }
+  .xmb .xmb-controls-row { gap: 8px; }
+  .xmb .xmb-ctrl { flex: 1 1 auto; padding: 12px 10px; }
 
-  .xmb .xmb-ctrl {
-    flex: 1 1 auto;
-    padding: 12px 10px;
-  }
-
-  /* Activer la barre de contrôle collante */
   .xmb .xmb-sticky-controls {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
-    position: fixed;
-    left: 0; right: 0; bottom: 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    position: fixed; left: 0; right: 0; bottom: 0;
     padding: 8px 12px;
     background: rgba(11, 18, 32, 0.95);
     border-top: 1px solid #1f2937;
     backdrop-filter: blur(6px);
     z-index: 40;
   }
-
   .xmb .xmb-sticky-btn {
-    font-weight: 800;
-    font-size: 18px;
-    padding: 12px 0;
-    border-radius: 12px;
-    border: 1px solid #374151;
-    background: #1f2937;
-    color: #e5e7eb;
+    font-weight: 800; font-size: 18px; padding: 12px 0;
+    border-radius: 12px; border: 1px solid #374151;
+    background: #1f2937; color: #e5e7eb;
   }
   .xmb .xmb-sticky-btn:disabled { opacity: 0.6; }
-
-  .xmb .xmb-sticky-danger {
-    background: #ef4444;
-    border-color: #991b1b;
-    color: white;
-  }
+  .xmb .xmb-sticky-danger { background: #ef4444; border-color: #991b1b; color: white; }
 }
 
-/* ========= Breakpoint ≤ 520px ========= */
+/* ≤ 520px */
 @media (max-width: 520px) {
   .xmb h1 { font-size: 22px !important; }
   .xmb h2 { font-size: 16px !important; }
   .xmb .xmb-slider { height: 8px; }
 }
 
-/* Petit keyframe pour le toast */
+/* Toast */
 @keyframes fadeOut { 0%{opacity:1} 75%{opacity:1} 100%{opacity:0; pointer-events:none} }
 `;

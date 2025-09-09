@@ -4,16 +4,6 @@ export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { CONTROL, NOWPLAYING, QUEUE } from "@/lib/firebaseAdmin";
 
-interface QueueItem {
-  url: string;
-  addedBy?: string;
-  status: "queued" | "playing" | "done" | "error";
-  createdAt?: unknown;
-  startedAt?: unknown;
-  endedAt?: unknown;
-  workerId?: string;
-}
-
 export async function GET() {
   const [nowSnap, controlSnap, queuedSnap] = await Promise.all([
     NOWPLAYING().get(),
@@ -26,17 +16,24 @@ export async function GET() {
 
   const queue = queuedSnap.docs.map((d) => {
     const data = d.data() as Record<string, unknown>;
-    const item: QueueItem = {
+    return {
+      id: d.id,
       url: String(data.url ?? ""),
       addedBy: typeof data.addedBy === "string" ? data.addedBy : undefined,
-      status: (data.status as QueueItem["status"]) ?? "queued",
+      status: (data.status as "queued" | "playing" | "done" | "error") ?? "queued",
       createdAt: data.createdAt,
       startedAt: data.startedAt,
       endedAt: data.endedAt,
       workerId: typeof data.workerId === "string" ? data.workerId : undefined,
     };
-    return { id: d.id, ...item };
   });
 
-  return NextResponse.json({ ok: true, now, queue, control });
+  // expose paused / volume pour l'UI
+  const uiControl = {
+    paused: Boolean(control?.paused ?? false),
+    volume: Number(control?.volume ?? 80),
+    skipSeq: Number(control?.skipSeq ?? 0),
+  };
+
+  return NextResponse.json({ ok: true, now, queue, control: uiControl });
 }

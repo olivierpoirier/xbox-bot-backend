@@ -4,9 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "next build --turbopack",
+    "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "next lint",
+    "worker": "tsx worker/worker.ts"
   },
   "dependencies": {
     "firebase-admin": "^13.5.0",
@@ -19,9 +20,11 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/yargs": "^17.0.33",
     "dotenv": "^17.2.2",
     "eslint": "^9",
     "eslint-config-next": "15.5.2",
+    "tsx": "^4.20.5",
     "typescript": "^5"
   }
 }

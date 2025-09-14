@@ -9,14 +9,18 @@ export type MpvHandle = {
   kill: () => void;
 };
 
-const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function findPlayerBinary(): string {
   const bin = (process.env.MPV_BIN || "").trim();
   if (bin) return bin;
-  const ok = (cmd: string) => {
-    try { return spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0; }
-    catch { return false; }
+
+  const ok = (cmd: string): boolean => {
+    try {
+      return spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0;
+    } catch {
+      return false;
+    }
   };
   if (ok("mpv")) return "mpv";
   if (ok("mpvnet")) return "mpvnet";
@@ -26,7 +30,7 @@ function findPlayerBinary(): string {
 function splitArgs(str: string): string[] {
   const m = str.match(/(?:[^\s"]+|"[^"]*")+/g);
   if (!m) return [];
-  return m.map(s => (s.startsWith('"') && s.endsWith('"')) ? s.slice(1, -1) : s);
+  return m.map((s) => (s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s));
 }
 
 function buildAudioArgs(volume: number, ipcPath: string): string[] {
@@ -34,31 +38,28 @@ function buildAudioArgs(volume: number, ipcPath: string): string[] {
     "--no-video",
     `--volume=${Math.max(0, Math.min(100, volume))}`,
     `--input-ipc-server=${ipcPath}`,
+    "--ytdl-format=bestaudio/best",
   ];
 
-  // --- device cible
   const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
   if (audioDevice) {
     args.push(`--audio-device=${audioDevice}`);
     console.log("[mpv] audio-device =", audioDevice);
   }
 
-  // --- qualité & buffer par défaut
-  args.push("--ytdl-format=bestaudio/best");
   const bufEnv = (process.env.MPV_AUDIO_BUFFER_SECS || "").trim();
   const bufVal = bufEnv ? Number(bufEnv) : 2;
   if (Number.isFinite(bufVal) && bufVal >= 0 && bufVal <= 10) {
     args.push(`--audio-buffer=${bufVal}`);
   }
 
-  // --- extras via env (ex: --no-config)
   const extra = splitArgs(process.env.MPV_ADDITIONAL_OPTS || "");
   args.push(...extra);
 
   return args;
 }
 
-async function connectIpc(pipePath: string, timeoutMs = 20000) {
+async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Socket> {
   const start = Date.now();
   let lastErr: unknown;
   while (Date.now() - start < timeoutMs) {
@@ -77,15 +78,21 @@ async function connectIpc(pipePath: string, timeoutMs = 20000) {
   throw new Error("IPC mpv timeout", { cause: lastErr });
 }
 
-export async function startMpv(url: string, volume = 80) {
+export async function startMpv(url: string, _volumeIgnored = 100): Promise<MpvHandle> {
   const bin = findPlayerBinary();
-  const ipcPath = process.platform === "win32"
-    ? `\\\\.\\pipe\\xmb_mpv_${Date.now()}`
-    : `/tmp/xmb_mpv_${Date.now()}.sock`;
+  const ipcPath =
+    process.platform === "win32"
+      ? `\\\\.\\pipe\\xmb_mpv_${Date.now()}`
+      : `/tmp/xmb_mpv_${Date.now()}.sock`;
 
-  try { fs.unlinkSync(ipcPath); } catch {}
+  try {
+    fs.unlinkSync(ipcPath);
+  } catch {
+    /* ignore */
+  }
 
-  const args = [...buildAudioArgs(volume, ipcPath), url];
+  // ⚠️ Volume forcé à 100%
+  const args = [...buildAudioArgs(100, ipcPath), url];
   console.log("[mpv] spawn", bin, args.join(" "));
 
   const proc = spawn(bin, args, { stdio: ["ignore", "inherit", "inherit"] });
@@ -93,25 +100,54 @@ export async function startMpv(url: string, volume = 80) {
 
   const send = (cmd: unknown) =>
     new Promise<void>((resolve, reject) => {
-      sock.write(JSON.stringify(cmd) + "\n", (err) => err ? reject(err) : resolve());
+      sock.write(JSON.stringify(cmd) + "\n", (err) => (err ? reject(err) : resolve()));
     });
 
   const kill = () => {
-    try { sock.destroy(); } catch {}
-    try { proc.kill("SIGKILL"); } catch {}
+    try {
+      sock.destroy();
+    } catch {
+      /* ignore */
+    }
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      /* ignore */
+    }
   };
 
-  proc.once("exit", () => { try { sock.destroy(); } catch {} });
+  proc.once("exit", () => {
+    try {
+      sock.destroy();
+    } catch {
+      /* ignore */
+    }
+  });
 
-  return { proc, sock, send, kill } as MpvHandle;
+  return { proc, sock, send, kill };
 }
 
-export async function mpvPause(h: MpvHandle, on: boolean) {
+export async function mpvPause(h: MpvHandle, on: boolean): Promise<void> {
   await h.send({ command: ["set_property", "pause", on] });
 }
-export async function mpvVolume(h: MpvHandle, v: number) {
-  await h.send({ command: ["set_property", "volume", Math.max(0, Math.min(100, v))] });
+
+// Laisse l'API exister, mais c’est un no-op côté serveur (volume toujours 100)
+export async function mpvVolume(_h: MpvHandle, _v: number): Promise<void> {
+  // no-op
 }
-export async function mpvQuit(h: MpvHandle) {
+
+export async function mpvQuit(h: MpvHandle): Promise<void> {
   await h.send({ command: ["quit"] });
+}
+export async function mpvSetLoopFile(h: MpvHandle, on: boolean): Promise<void> {
+  await h.send({ command: ["set_property", "loop-file", on ? "inf" : "no"] });
+}
+
+// NEW: Seek commandes
+export async function mpvSeekAbsolute(h: MpvHandle, seconds: number): Promise<void> {
+  // set_property time-pos attend un float en secondes
+  await h.send({ command: ["set_property", "time-pos", Math.max(0, seconds)] });
+}
+export async function mpvSeekRelative(h: MpvHandle, deltaSeconds: number): Promise<void> {
+  await h.send({ command: ["seek", deltaSeconds, "relative+exact"] });
 }

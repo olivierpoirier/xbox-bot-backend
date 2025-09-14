@@ -1,69 +1,118 @@
+import { PauseCircle, Repeat } from "lucide-react";
 import type { Now } from "../types";
+import SpectrumBars from "./SpectrumBars";
 
 interface Props {
   now: Now | null;
-  volume: number;
   paused: boolean;
+  repeat: boolean;
   busy: string | null;
-  sendCommand: (cmd: "pause" | "resume" | "skip" | "volume", arg?: number) => void;
-  clearQueue: () => void;
+  eqColorFrom?: string;
+  eqColorTo?: string;
+  rainbow?: boolean;
 }
 
-export default function NowPlaying({ now, volume, paused, busy, sendCommand, clearQueue }: Props) {
+function formatTime(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`
+    : `${m}:${String(ss).padStart(2, "0")}`;
+}
+
+function currentPosSec(now: Now | null, paused: boolean): number {
+  if (!now) return 0;
+  const base = now.positionOffsetSec || 0;
+  if (paused || !now.startedAt) return base;
+  return base + (Date.now() - now.startedAt) / 1000;
+}
+
+export default function NowPlaying({
+  now, paused, repeat, busy,
+  eqColorFrom = "#60a5fa",
+  eqColorTo = "#f472b6",
+  rainbow = false,
+}: Props) {
+  const isBusy = Boolean(busy);
+  const hasDur = !!now?.durationSec && now.durationSec > 0;
+  const dur = hasDur ? now!.durationSec! : 0;
+  const pos = hasDur ? Math.min(dur, Math.max(0, currentPosSec(now, paused))) : 0;
+
+  const cardCls = `bg-bg border border-transparent rounded-xl p-4 shadow-soft ${
+    rainbow ? "neon-glow rainbow-border animate-hue" : "neon-glow themed-border"
+  }`;
+
   return (
-    <section className="bg-bg border border-slate-800 rounded-xl p-4 shadow-soft">
+    <section className={cardCls}>
       <h2 className="text-lg font-semibold mb-2">Lecture en cours</h2>
+
       {now?.url ? (
-        <div className="p-3 rounded-xl border border-slate-700 bg-panel">
-          <a href={now.url} target="_blank" rel="noreferrer" className="font-bold text-blue-300 break-words hover:underline">
-            {now.title || now.url}
-          </a>
-          {now.addedBy && <div className="text-xs text-muted">par {now.addedBy}</div>}
-          <div className="text-xs text-muted">Volume : {volume}%</div>
-          {paused && (
-            <div className="mt-2 inline-block px-2 py-1 text-xs bg-purple-600 text-white rounded-full">
-              ⏸ En pause
+        <div className="p-3 rounded-xl bg-panel">
+          <div className="flex gap-3 items-start">
+            {now.thumb && (
+              <img
+                src={now.thumb}
+                alt={now.title || "Cover"}
+                className="w-56 h--56 rounded-lg object-cover border border-slate-700"
+              />
+            )}
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <a
+                  href={now.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-bold text-blue-300 break-words hover:underline"
+                >
+                  {now.title || now.url}
+                </a>
+                {now.addedBy && (
+                  <span className="text-xs text-muted">· par {now.addedBy}</span>
+                )}
+              </div>
+
+              <div className="mt-1 text-xs text-muted">
+                {hasDur ? `${formatTime(pos)} / ${formatTime(dur)}` : "Durée inconnue"}
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {paused && (
+                  <span className="px-2 py-1 text-xs bg-purple-600 text-white rounded-full inline-flex items-center gap-1">
+                    <PauseCircle className="w-3.5 h-3.5" />
+                    En pause
+                  </span>
+                )}
+                {repeat && (
+                  <span className="px-2 py-1 text-xs bg-amber-500 text-black rounded-full inline-flex items-center gap-1">
+                    <Repeat className="w-3.5 h-3.5" />
+                    Repeat ON
+                  </span>
+                )}
+                {isBusy && (
+                  <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-sky-600 text-white rounded-full">
+                    <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                    traitement…
+                  </span>
+                )}
+              </div>
+
+              <div className={rainbow ? "mt-4 animate-hue" : "mt-4"}>
+                <SpectrumBars
+                  playing={!paused}
+                  bars={24}
+                  colorFrom={eqColorFrom}
+                  colorTo={eqColorTo}
+                />
+              </div>
             </div>
-          )}
+          </div>
         </div>
       ) : (
         <div className="text-muted">Aucune piste en cours.</div>
       )}
-
-      <div className="flex gap-2 mt-3">
-        <button
-          onClick={() => sendCommand(paused ? "resume" : "pause")}
-          disabled={!!busy}
-          className="px-3 py-2 rounded-xl bg-slate-800"
-        >
-          {paused ? "▶ Reprendre" : "⏸ Pause"}
-        </button>
-        <button
-          onClick={() => sendCommand("skip")}
-          disabled={!!busy}
-          className="px-3 py-2 rounded-xl bg-slate-800"
-        >
-          ⏭ Skip
-        </button>
-        <button
-          onClick={clearQueue}
-          disabled={!!busy}
-          className="px-3 py-2 rounded-xl bg-red-500 text-white"
-        >
-          🗑 Vider
-        </button>
-      </div>
-
-      <div className="mt-3">
-        <input
-          type="range"
-          min={0}
-          max={100}
-          value={volume}
-          onChange={(e) => sendCommand("volume", parseInt(e.target.value))}
-          className="xmb-slider w-full"
-        />
-      </div>
     </section>
   );
 }

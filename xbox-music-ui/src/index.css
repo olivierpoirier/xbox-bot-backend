@@ -2,71 +2,180 @@
 @tailwind components;
 @tailwind utilities;
 
+/* === Tokens sémantiques par défaut (surfaces + textes) === */
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  --bg:    #0b1220;   /* fond page neutre */
+  --panel: #0f172a;   /* cartes/panels neutres */
+  --ink:   #e5e7eb;   /* texte principal */
+  --muted: #94a3b8;   /* texte secondaire */
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+/* === Sélecteurs de thème (accents c1/c2) ===
+   -> En mode "color", on TEINTE --bg / --panel avec c1/c2.
+   -> En mode "rainbow", on reste neutre (pas de teinte de surfaces). */
+.theme-classic {
+  --c1: #60a5fa; --c2: #f472b6;
+  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
 }
-a:hover {
-  color: #535bf2;
+.theme-ocean {
+  --c1: #22d3ee; --c2: #34d399;
+  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
+}
+.theme-sunset {
+  --c1: #f59e0b; --c2: #f472b6;
+  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
+}
+.theme-violet {
+  --c1: #a78bfa; --c2: #f472b6;
+  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
+}
+/* Mode Rainbow = surfaces neutres (pas de teinte) */
+.theme-rainbow { --c1: #22d3ee; --c2: #f472b6; }
+
+/* === Centrage global propre === */
+html, body, #root { height: 100%; }
+body { margin: 0; }
+
+/* === UTILITAIRES sémantiques (utilisés par tes composants) === */
+.bg-bg     { background: var(--bg); }
+.bg-panel  { background: var(--panel); }
+.text-ink  { color: var(--ink); }
+.text-muted{ color: var(--muted); }
+
+/* === Flourish coloré en "mode color" uniquement === */
+/* Fond de page légèrement vivant avec c1/c2 */
+.theme-classic .bg-bg,
+.theme-ocean .bg-bg,
+.theme-sunset .bg-bg,
+.theme-violet .bg-bg {
+  background:
+    radial-gradient(1200px 600px at -10% -10%,
+      color-mix(in oklab, var(--c1) 14%, transparent) 0%, transparent 60%),
+    radial-gradient(900px 500px at 110% 10%,
+      color-mix(in oklab, var(--c2) 12%, transparent) 0%, transparent 60%),
+    var(--bg);
+}
+/* Panels avec dégradé très doux depuis c1 vers c2 */
+.theme-classic .bg-panel,
+.theme-ocean   .bg-panel,
+.theme-sunset  .bg-panel,
+.theme-violet  .bg-panel {
+  background:
+    linear-gradient(135deg,
+      color-mix(in oklab, var(--c1) 8%, transparent),
+      color-mix(in oklab, var(--c2) 6%, transparent)),
+    var(--panel);
 }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+/* === Slider thémé === */
+.xmb-slider { appearance: none; height: 6px; border-radius: 9999px; outline: none; }
+.xmb-slider-themed { background: linear-gradient(90deg, var(--c1), var(--c2)); }
+.xmb-slider-rainbow {
+  background: linear-gradient(90deg, #22d3ee, #a78bfa, #f472b6, #22d3ee);
+  background-size: 200% 100%;
+  animation: sliderGlow 6s linear infinite;
+}
+@keyframes sliderGlow { 0%{background-position:0% 0} 100%{background-position:200% 0} }
+.xmb-slider::-webkit-slider-thumb {
+  appearance: none; width: 14px; height: 14px; border-radius: 9999px;
+  background: #fff; border: 2px solid #111827;
+  box-shadow: 0 0 12px rgba(244,114,182,0.8); cursor: pointer;
+}
+.xmb-slider::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 9999px;
+  background: #fff; border: 2px solid #111827;
+  box-shadow: 0 0 12px rgba(244,114,182,0.8); cursor: pointer;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+/* === Glow & Rainbow border (inchangés) === */
+.neon-glow {
+  box-shadow:
+    0 0 24px color-mix(in oklab, var(--c2) 18%, transparent),
+    0 0 44px color-mix(in oklab, var(--c1) 12%, transparent);
+}
+.rainbow-border { position: relative; }
+.rainbow-border::before {
+  content: ""; position: absolute; inset: -2px; border-radius: 18px; padding: 2px;
+  background: conic-gradient(from 0deg, #22d3ee, #a78bfa, #f472b6, #22d3ee);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Hue animation util + halo rainbow (si tu l’utilises) */
+.animate-hue { animation: hue 10s linear infinite; }
+@keyframes hue { from{filter:hue-rotate(0)} to{filter:hue-rotate(360deg)} }
+.glow-wrap { position: relative; overflow: visible; }
+.glow-rainbow::after {
+  content: ""; position: absolute; inset: 0; border-radius: 12px; filter: blur(12px);
+  background: radial-gradient(60% 80% at 50% 50%,
+    rgba(34,211,238,0.35), rgba(167,139,250,0.25), rgba(244,114,182,0.2), transparent 70%);
+  pointer-events: none; animation: hue 10s linear infinite;
 }
 
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+
+/* === Bordure dégradée "couleur" pour les cartes/barres (mode color) === */
+.themed-border { position: relative; }
+.themed-border::before {
+  content: "";
+  position: absolute;
+  inset: -2px;                /* même épaisseur que rainbow */
+  border-radius: 0.75rem;     /* suit le rounded-xl / rounded-2xl du composant */
+  padding: 2px;
+  background: linear-gradient(135deg, var(--c1), var(--c2));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: 0.95;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+/* === Bordure dégradée pour <input> (sans pseudo) === */
+.themed-input {
+  border: 1.5px solid transparent;           /* on masque la vraie bordure */
+  background:
+    linear-gradient(var(--panel), var(--panel)) padding-box,   /* fond */
+    linear-gradient(135deg, var(--c1), var(--c2)) border-box;  /* bordure dégradée */
+  transition: box-shadow 150ms ease, background 200ms ease;
 }
+
+.themed-input:focus {
+  outline: none;
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--c1) 24%, transparent),
+    0 0 0 6px color-mix(in oklab, var(--c2) 18%, transparent);
+}
+
+/* En mode rainbow on évite tout mélange: pas de bordure couleur sur les inputs */
+.theme-rainbow .themed-input {
+  background: var(--panel);
+  border: 1px solid #334155;   /* look neutre */
+  box-shadow: none;
+}
+
+
+/* Bague dégradée pour champs (même look que themed-border) */
+.themed-field { position: relative; border-radius: 0.75rem; } /* 0.75rem = rounded-xl */
+.themed-field::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: linear-gradient(135deg, var(--c1), var(--c2));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  opacity: .95;
+}
+/* en mode rainbow on coupe la bordure couleur des inputs */
+.theme-rainbow .themed-field::before { display: none; }

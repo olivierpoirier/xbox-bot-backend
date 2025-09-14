@@ -1,42 +1,118 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
+import type { QueueResponse } from "../types";
 
-export type Control = { paused?: boolean; volume?: number; skipSeq?: number };
-export type Now = { url?: string; title?: string; addedBy?: string; startedAt?: number | null };
-export type QueueItem = { id: string; url: string; addedBy?: string; status: "queued"|"playing"|"done"|"error"; createdAt?: number };
-export type QueueState = { ok: boolean; now: Now | null; queue: QueueItem[]; control: Control | null };
+export type Command =
+  | "pause"
+  | "resume"
+  | "skip"
+  | "skip_group"
+  | "shuffle"
+  | "repeat"
+  | "seek"
+  | "seek_abs";
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || ""; // vide => même origine
+export type QueueState = QueueResponse;
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || "";
 
 export default function useLiveQueue() {
-  const [state, setState] = useState<QueueState>({ ok: true, now: null, queue: [], control: { paused: false, volume: 80, skipSeq: 0 } });
+  const [state, setState] = useState<QueueState>({
+    ok: true,
+    now: null,
+    queue: [],
+    control: { paused: false, volume: 100, skipSeq: 0, repeat: false },
+  });
   const [toast, setToast] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
   const socketRef = useRef<Socket | null>(null);
 
+  // Petit tick pour rafraîchir l’UI du temps local
+  const [, setTick] = useState<number>(0);
   useEffect(() => {
-    const url = SERVER_URL || undefined; // même origin si vide
-    const s = io(url, { transports: ["websocket"] });
-    socketRef.current = s;
+    const id = setInterval(() => setTick((n) => (n + 1) % 1_000_000), 500);
+    return () => clearInterval(id);
+  }, []);
 
-    s.on("connect", () => setToast("Connecté ✅"));
-    s.on("disconnect", () => setToast("Déconnecté"));
-    s.on("state", (payload: QueueState) => setState(payload));
-    s.on("toast", (msg: string) => setToast(msg));
+  useEffect(() => {
+    try {
+      const url = SERVER_URL || undefined;
+      const s = io(url, { transports: ["websocket"] });
+      socketRef.current = s;
 
-    return () => { s.close(); };
+      s.on("connect", () => {
+        setToast("Connecté ✅");
+        console.log("[socket] connect", { id: s.id });
+      });
+      s.on("disconnect", (reason) => {
+        setToast("Déconnecté");
+        console.warn("[socket] disconnect:", reason);
+      });
+      s.on("connect_error", (err) => {
+        setToast("Erreur de connexion socket.");
+        console.error("[socket] connect_error:", err);
+      });
+      s.on("error", (err: unknown) => {
+        setToast("Erreur socket.");
+        console.error("[socket] error:", err);
+      });
+      s.on("state", (payload: QueueState) => {
+        setState(payload);
+        setBusy(null); // annule un loader en cours
+      });
+      s.on("toast", (msg: string) => {
+        setToast(msg);
+        console.log("[socket] toast:", msg);
+      });
+
+      return () => {
+        try {
+          s.close();
+        } catch (e) {
+          console.error("[socket] close error:", e);
+        }
+      };
+    } catch (e) {
+      setToast("Impossible d’initialiser la connexion.");
+      console.error("[socket] init error:", e);
+    }
   }, []);
 
   const play = useCallback((url: string, addedBy?: string) => {
-    socketRef.current?.emit("play", { url, addedBy });
+    try {
+      setBusy("play");
+      socketRef.current?.emit("play", { url, addedBy });
+      console.log("[emit] play", { url, addedBy });
+    } catch (e) {
+      setBusy(null);
+      setToast("Échec de l’envoi de la commande play.");
+      console.error("[emit] play error:", e);
+    }
   }, []);
 
-  const command = useCallback((cmd: "pause"|"resume"|"skip"|"volume", arg?: number, adminPass?: string) => {
-    socketRef.current?.emit("command", { cmd, arg, adminPass });
+  const command = useCallback((cmd: Command, arg?: number, adminPass?: string) => {
+    try {
+      setBusy(cmd);
+      socketRef.current?.emit("command", { cmd, arg, adminPass });
+      console.log("[emit] command", { cmd, arg });
+    } catch (e) {
+      setBusy(null);
+      setToast(`Échec de la commande: ${cmd}.`);
+      console.error(`[emit] command ${cmd} error:`, e);
+    }
   }, []);
 
   const clear = useCallback((adminPass?: string) => {
-    socketRef.current?.emit("clear", adminPass);
+    try {
+      setBusy("clear");
+      socketRef.current?.emit("clear", adminPass);
+      console.log("[emit] clear");
+    } catch (e) {
+      setBusy(null);
+      setToast("Échec de clear.");
+      console.error("[emit] clear error:", e);
+    }
   }, []);
 
-  return { state, toast, setToast, play, command, clear };
+  return { state, toast, setToast, play, command, clear, busy, setBusy };
 }

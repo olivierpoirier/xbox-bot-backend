@@ -51,7 +51,7 @@ type QueueItem = {
 };
 
 const state = {
-  control: { paused: false, volume: 100, skipSeq: 0, repeat: false } as Control, // volume 100 fixé
+  control: { paused: false, volume: 100, skipSeq: 0, repeat: false } as Control,
   now: null as Now | null,
   queue: [] as QueueItem[],
 };
@@ -59,13 +59,50 @@ const state = {
 let playing: { item: QueueItem; handle: MpvHandle } | null = null;
 let nextId = 1;
 
-function broadcast(): void {
-  io.emit("state", {
-    ok: true,
-    now: state.now,
-    queue: state.queue.filter((q) => q.status === "queued"),
-    control: state.control,
-  });
+/* ---------- Helpers progression ---------- */
+function computePosition(now: Now, atMs = Date.now()): number {
+  const base = now.positionOffsetSec || 0;
+  if (now.startedAt == null) return base;
+  return base + Math.max(0, (atMs - now.startedAt) / 1000);
+}
+
+/* ---------- Broadcast batching & dedup ---------- */
+let broadcastTimer: NodeJS.Timeout | null = null;
+let lastHash = "";
+
+function computeHash(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_k, v) =>
+      v && typeof v === "object"
+        ? ("status" in v && "id" in v ? { id: (v as any).id, status: (v as any).status } : v)
+        : v
+    );
+  } catch {
+    return String(Math.random());
+  }
+}
+
+function scheduleBroadcast(): void {
+  if (broadcastTimer) return;
+  broadcastTimer = setTimeout(() => {
+    broadcastTimer = null;
+
+    const queued = state.queue.filter((q) => q.status === "queued");
+    const payload = { ok: true, now: state.now, queue: queued, control: state.control };
+
+    const h = computeHash({
+      now: state.now,
+      control: state.control,
+      queueMin: queued.map((q) => [q.id, q.status]),
+    });
+    if (h === lastHash) return;
+    lastHash = h;
+    io.emit("state", payload);
+  }, 20);
+}
+
+function pushToast(msg: string): void {
+  io.emit("toast", msg);
 }
 
 function checkAdmin(pass?: string): boolean {
@@ -73,13 +110,19 @@ function checkAdmin(pass?: string): boolean {
   return (pass || "") === ADMIN_PASS;
 }
 
-function shuffleInPlace<T>(arr: T[]): void {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+function shuffleQueuedInPlace(): void {
+  const queuedIdx: number[] = [];
+  for (let i = 0; i < state.queue.length; i++) {
+    if (state.queue[i].status === "queued") queuedIdx.push(i);
+  }
+  for (let k = queuedIdx.length - 1; k > 0; k--) {
+    const a = queuedIdx[k];
+    const b = queuedIdx[Math.floor(Math.random() * (k + 1))];
+    [state.queue[a], state.queue[b]] = [state.queue[b], state.queue[a]];
   }
 }
 
+/* ---------- Lecture/auto enchaînement ---------- */
 async function ensurePlayerLoop(): Promise<void> {
   if (playing) return;
 
@@ -89,10 +132,8 @@ async function ensurePlayerLoop(): Promise<void> {
   const item = state.queue[idx];
   item.status = "playing";
 
-  // --- Enrichissement: on PROBE TOUJOURS pour récupérer la durée ---
   try {
     const info = await probeSingle(item.url);
-    // complète titre/thumb si absents
     item.title = item.title || info.title;
     item.thumb = item.thumb || info.thumb;
 
@@ -101,13 +142,12 @@ async function ensurePlayerLoop(): Promise<void> {
       title: item.title,
       thumb: item.thumb,
       addedBy: item.addedBy,
-      startedAt: null,            // sera défini juste après le spawn
+      startedAt: null,
       group: item.group,
-      durationSec: info.durationSec, // ✅ durée si dispo
+      durationSec: info.durationSec,
       positionOffsetSec: 0,
     };
   } catch {
-    // Pas de métadonnées: on avance sans durée (le slider restera en "chargement")
     state.now = {
       url: item.url,
       title: item.title,
@@ -115,41 +155,86 @@ async function ensurePlayerLoop(): Promise<void> {
       addedBy: item.addedBy,
       startedAt: null,
       group: item.group,
-      durationSec: undefined,      // ❌ pas de slider ; boutons ±15s OK
+      durationSec: undefined,
       positionOffsetSec: 0,
     };
   }
-
-  // Un seul broadcast ici suffit
-  broadcast();
+  scheduleBroadcast();
 
   try {
-    const handle = await startMpv(item.url, 100); // volume forcé à 100%
+    const handle = await startMpv(item.url, 100);
     playing = { item, handle };
 
-    // appliquer état initial
     await mpvPause(handle, state.control.paused).catch(() => {});
     await mpvSetLoopFile(handle, state.control.repeat).catch(() => {});
 
-    // démarrage logique (horloge locale)
     state.now = { ...(state.now as Now), startedAt: Date.now(), positionOffsetSec: 0 };
-    broadcast();
+    scheduleBroadcast();
+
+    /* Log console : début de piste */
+    logNowPlaying();
 
     handle.proc.once("exit", () => {
       item.status = "done";
       state.now = null;
       playing = null;
-      broadcast();
-      setTimeout(() => { void ensurePlayerLoop(); }, 150);
+      clearStatusLine();
+      scheduleBroadcast();
+      setTimeout(() => { void ensurePlayerLoop(); }, 120);
     });
   } catch {
     item.status = "error";
     state.now = null;
     playing = null;
-    broadcast();
-    setTimeout(() => { void ensurePlayerLoop(); }, 1000);
+    clearStatusLine();
+    scheduleBroadcast();
+    setTimeout(() => { void ensurePlayerLoop(); }, 600);
   }
 }
+
+/* ---------- Ticker de progression (événement 'progress') + console ---------- */
+const TICK_MS = Math.max(250, Number(process.env.PROGRESS_TICK_MS || 1000));
+const WANT_CONSOLE = process.env.PROGRESS_LOG === "1";
+
+let lastProgressKey = "";
+let lastStatusPrinted = "";
+
+setInterval(() => {
+  const now = state.now;
+  if (!now) return;
+
+  const pos = computePosition(now);
+  const dur = now.durationSec ?? null;
+
+  // emet côté clients (utile si tu l'utilises)
+  const key = `${Math.floor(pos)}|${state.control.paused ? 1 : 0}|${dur ?? -1}`;
+  if (key !== lastProgressKey) {
+    lastProgressKey = key;
+    io.emit("progress", {
+      positionSec: pos,
+      durationSec: dur,
+      paused: state.control.paused,
+      repeat: state.control.repeat,
+      title: now.title,
+      url: now.url,
+    });
+  }
+
+  // Affichage console (si activé)
+  if (WANT_CONSOLE) {
+    const line = renderStatusLine({
+      paused: state.control.paused,
+      repeat: state.control.repeat,
+      pos,
+      dur,
+      title: now.title || "(sans titre)",
+    });
+    if (line !== lastStatusPrinted) {
+      lastStatusPrinted = line;
+      writeStatusLine(line);
+    }
+  }
+}, TICK_MS);
 
 /* ---------------- Socket handlers ---------------- */
 io.on("connection", (socket) => {
@@ -159,6 +244,17 @@ io.on("connection", (socket) => {
     queue: state.queue.filter((q) => q.status === "queued"),
     control: state.control,
   });
+
+  if (state.now) {
+    socket.emit("progress", {
+      positionSec: computePosition(state.now),
+      durationSec: state.now.durationSec ?? null,
+      paused: state.control.paused,
+      repeat: state.control.repeat,
+      title: state.now.title,
+      url: state.now.url,
+    });
+  }
 
   socket.on("play", async (payload: { url?: string; addedBy?: string }) => {
     const raw = String(payload?.url || "").trim();
@@ -173,6 +269,9 @@ io.on("connection", (socket) => {
       const group =
         items.length > 1 ? `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` : undefined;
 
+      const addedBy = (payload.addedBy || "anon").slice(0, 64);
+      const nowTs = Date.now();
+
       for (const it of items) {
         state.queue.push({
           id: String(nextId++),
@@ -180,16 +279,16 @@ io.on("connection", (socket) => {
           title: it.title,
           thumb: it.thumb,
           group,
-          addedBy: (payload.addedBy || "anon").slice(0, 64),
+          addedBy,
           status: "queued",
-          createdAt: Date.now(),
+          createdAt: nowTs,
         });
       }
 
       if (items.length > 1) {
-        io.emit("toast", `Playlist ajoutée: ${items.length} pistes valides ✅`);
+        pushToast(`Playlist ajoutée: ${items.length} pistes valides ✅`);
       }
-      broadcast();
+      scheduleBroadcast();
       void ensurePlayerLoop();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "yt-dlp";
@@ -197,69 +296,76 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Commandes: pause/resume/skip/skip_group/shuffle/repeat/seek/seek_abs
   socket.on("command", async (payload: {
     cmd: "pause" | "resume" | "skip" | "skip_group" | "shuffle" | "repeat" | "seek" | "seek_abs";
-    arg?: number;        // repeat(0/1), seek delta en secondes, seek_abs = seconde absolue
+    arg?: number;
     adminPass?: string;
   }) => {
     if (!checkAdmin(payload?.adminPass)) return socket.emit("toast", "Forbidden (admin)");
 
     const now = state.now;
 
-    if (payload.cmd === "pause") {
-      state.control.paused = true;
-      // geler le temps logique
-      if (now?.startedAt != null) {
-        const elapsed = (Date.now() - now.startedAt) / 1000;
-        state.now = { ...now, startedAt: null, positionOffsetSec: (now.positionOffsetSec || 0) + elapsed };
+    switch (payload.cmd) {
+      case "pause": {
+        state.control.paused = true;
+        if (now?.startedAt != null) {
+          const elapsed = (Date.now() - now.startedAt) / 1000;
+          state.now = { ...now, startedAt: null, positionOffsetSec: (now.positionOffsetSec || 0) + elapsed };
+        }
+        break;
       }
-    } else if (payload.cmd === "resume") {
-      state.control.paused = false;
-      // repartir le chrono logique
-      if (now) state.now = { ...now, startedAt: Date.now() };
-    } else if (payload.cmd === "skip") {
-      state.control.skipSeq++;
-    } else if (payload.cmd === "skip_group") {
-      state.control.skipSeq++;
-    } else if (payload.cmd === "repeat") {
-      state.control.repeat = !!Number(payload.arg ?? (state.control.repeat ? 0 : 1));
-    } else if (payload.cmd === "shuffle") {
-      const queued = state.queue.filter((q) => q.status === "queued");
-      if (queued.length > 1) {
-        shuffleInPlace(queued);
-        const others = state.queue.filter((q) => q.status !== "queued");
-        state.queue = [...others, ...queued];
-        io.emit("toast", `🔀 Mélangé (${queued.length})`);
+      case "resume": {
+        state.control.paused = false;
+        if (now) state.now = { ...now, startedAt: Date.now() };
+        break;
       }
-    } else if (payload.cmd === "seek" && typeof payload.arg === "number") {
-      if (playing?.handle) {
-        await mpvSeekRelative(playing.handle, payload.arg).catch(() => {});
+      case "skip": {
+        state.control.skipSeq++;
+        break;
       }
-      // Ajustement logique
-      if (now) {
-        const base = (now.positionOffsetSec || 0) + (now.startedAt ? (Date.now() - now.startedAt) / 1000 : 0);
-        const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
-        const next = Math.max(0, Math.min(dur, base + payload.arg));
-        state.now = {
-          ...now,
-          positionOffsetSec: next,
-          startedAt: now.startedAt ? Date.now() : null,
-        };
+      case "skip_group": {
+        state.control.skipSeq++;
+        break;
       }
-    } else if (payload.cmd === "seek_abs" && typeof payload.arg === "number") {
-      const target = Math.max(0, payload.arg);
-      if (playing?.handle) {
-        await mpvSeekAbsolute(playing.handle, target).catch(() => {});
+      case "repeat": {
+        state.control.repeat = !!Number(payload.arg ?? (state.control.repeat ? 0 : 1));
+        break;
       }
-      if (now) {
-        const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
-        const clamped = Math.max(0, Math.min(dur, target));
-        state.now = {
-          ...now,
-          positionOffsetSec: clamped,
-          startedAt: now.startedAt ? Date.now() : null,
-        };
+      case "shuffle": {
+        const before = state.queue.filter((q) => q.status === "queued").length;
+        if (before > 1) {
+          shuffleQueuedInPlace();
+          pushToast(`🔀 Mélangé (${before})`);
+        }
+        break;
+      }
+      case "seek": {
+        if (typeof payload.arg === "number") {
+          if (playing?.handle) {
+            await mpvSeekRelative(playing.handle, payload.arg).catch(() => {});
+          }
+          if (now) {
+            const base = (now.positionOffsetSec || 0) + (now.startedAt ? (Date.now() - now.startedAt) / 1000 : 0);
+            const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
+            const next = Math.max(0, Math.min(dur, base + payload.arg));
+            state.now = { ...now, positionOffsetSec: next, startedAt: now.startedAt ? Date.now() : null };
+          }
+        }
+        break;
+      }
+      case "seek_abs": {
+        if (typeof payload.arg === "number") {
+          const target = Math.max(0, payload.arg);
+          if (playing?.handle) {
+            await mpvSeekAbsolute(playing.handle, target).catch(() => {});
+          }
+          if (now) {
+            const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
+            const clamped = Math.max(0, Math.min(dur, target));
+            state.now = { ...now, positionOffsetSec: clamped, startedAt: now.startedAt ? Date.now() : null };
+          }
+        }
+        break;
       }
     }
 
@@ -276,25 +382,49 @@ io.on("connection", (socket) => {
       if (payload.cmd === "skip_group") {
         const g = playing.item.group;
         if (g) {
-          state.queue.forEach((q) => {
+          for (const q of state.queue) {
             if (q.status === "queued" && q.group === g) q.status = "done";
-          });
+          }
         }
         await mpvQuit(playing.handle).catch(() => {});
       }
     }
 
-    broadcast();
+    scheduleBroadcast();
+
+    // petits logs utiles
+    if (WANT_CONSOLE) {
+      if (payload.cmd === "pause") console.log("\n⏸ pause");
+      if (payload.cmd === "resume") console.log("\n▶ reprise");
+      if (payload.cmd === "shuffle") console.log("\n🔀 shuffle");
+      if (payload.cmd === "repeat") console.log(`\n🔁 repeat: ${state.control.repeat ? "on" : "off"}`);
+      if (payload.cmd === "skip") console.log("\n⏭ skip");
+      if (payload.cmd === "seek" || payload.cmd === "seek_abs") {
+        clearStatusLine(); // force la ligne à se recalculer proprement
+        lastStatusPrinted = "";
+      }
+    }
   });
 
   socket.on("clear", async (adminPass?: string) => {
     if (!checkAdmin(adminPass)) return socket.emit("toast", "Forbidden (admin)");
     if (playing?.handle) await mpvQuit(playing.handle).catch(() => {});
-    state.queue.forEach((q) => {
+    for (const q of state.queue) {
       if (q.status === "queued" || q.status === "playing") q.status = "done";
-    });
+    }
     state.now = null;
-    broadcast();
+    clearStatusLine();
+    scheduleBroadcast();
+  });
+});
+
+/* ----------- Debug minimal (optionnel) ----------- */
+app.get("/now", (_req, res) => {
+  if (!state.now) return res.json({ ok: true, now: null });
+  const pos = computePosition(state.now);
+  res.json({
+    ok: true,
+    now: { ...state.now, positionSec: pos, paused: state.control.paused, repeat: state.control.repeat },
   });
 });
 
@@ -303,3 +433,36 @@ app.get("/healthz", (_req, res) => res.json({ ok: true }));
 server.listen(PORT, () => {
   console.log(`🎧 Music bot on http://localhost:${PORT}`);
 });
+
+/* ================= Console status helpers ================= */
+function fmtTime(sec: number | null | undefined): string {
+  if (sec == null || !Number.isFinite(sec)) return "--:--";
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m.toString()}:${r.toString().padStart(2, "0")}`;
+}
+function renderStatusLine(opts: { paused: boolean; repeat: boolean; pos: number; dur: number | null; title: string }) {
+  const icon = opts.paused ? "⏸" : "▶";
+  const rep = opts.repeat ? "R:on" : "R:off";
+  const left = `${icon} ${fmtTime(opts.pos)} / ${fmtTime(opts.dur)} | ${rep} | `;
+  const termW = process.stdout.columns || 120;
+  const maxTitle = Math.max(10, termW - left.length - 1);
+  let t = opts.title.replace(/\s+/g, " ").trim();
+  if (t.length > maxTitle) t = t.slice(0, Math.max(0, maxTitle - 1)) + "…";
+  return left + `"${t}"`;
+}
+function writeStatusLine(line: string) {
+  // efface ligne puis écrit (Windows/Unix ok)
+  process.stdout.write("\r" + line.padEnd(process.stdout.columns || line.length));
+}
+function clearStatusLine() {
+  if (!lastStatusPrinted) return;
+  process.stdout.write("\r" + " ".repeat(process.stdout.columns || lastStatusPrinted.length) + "\r");
+  lastStatusPrinted = "";
+}
+function logNowPlaying() {
+  if (!state.now) return;
+  clearStatusLine();
+  console.log(`🎵 Now playing: ${state.now.title || "(sans titre)"} ${state.now.durationSec ? "— " + fmtTime(state.now.durationSec) : ""}`);
+}

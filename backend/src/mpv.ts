@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import fs from "fs";
 import net from "net";
+import crypto from "crypto";
 
 export type MpvHandle = {
   proc: ChildProcess;
@@ -39,12 +40,15 @@ function buildAudioArgs(volume: number, ipcPath: string): string[] {
     `--volume=${Math.max(0, Math.min(100, volume))}`,
     `--input-ipc-server=${ipcPath}`,
     "--ytdl-format=bestaudio/best",
+    "--ytdl=yes",
   ];
 
   const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
   if (audioDevice) {
     args.push(`--audio-device=${audioDevice}`);
-    console.log("[mpv] audio-device =", audioDevice);
+    if (process.env.MPV_VERBOSE === "1") {
+      console.log("[mpv] audio-device =", audioDevice);
+    }
   }
 
   const bufEnv = (process.env.MPV_AUDIO_BUFFER_SECS || "").trim();
@@ -53,6 +57,20 @@ function buildAudioArgs(volume: number, ipcPath: string): string[] {
     args.push(`--audio-buffer=${bufVal}`);
   }
 
+  // Forcer mpv à utiliser notre yt-dlp (chemin exact)
+  const ytdlpPath = (process.env.YTDLP_BIN || "").trim();
+  if (ytdlpPath) {
+    const quoted = ytdlpPath.includes(" ") ? `"${ytdlpPath}"` : ytdlpPath;
+    args.push(`--script-opts=ytdl_hook-ytdl_path=${quoted}`);
+  }
+
+  // Options “raw” vers yt-dlp via ytdl_hook
+  const raw: string[] = [];
+  raw.push("force-ipv4=");
+  raw.push("extractor-args=youtube:player_client=android");
+  args.push(`--ytdl-raw-options=${raw.join(",")}`);
+
+  // Options additionnelles utilisateur
   const extra = splitArgs(process.env.MPV_ADDITIONAL_OPTS || "");
   args.push(...extra);
 
@@ -61,7 +79,9 @@ function buildAudioArgs(volume: number, ipcPath: string): string[] {
 
 async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Socket> {
   const start = Date.now();
+  let delay = 60;
   let lastErr: unknown;
+
   while (Date.now() - start < timeoutMs) {
     try {
       const sock = net.connect(pipePath);
@@ -72,7 +92,8 @@ async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Sock
       return sock;
     } catch (e) {
       lastErr = e;
-      await wait(120);
+      await wait(delay);
+      delay = Math.min(delay * 1.4, 250);
     }
   }
   throw new Error("IPC mpv timeout", { cause: lastErr });
@@ -80,48 +101,50 @@ async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Sock
 
 export async function startMpv(url: string, _volumeIgnored = 100): Promise<MpvHandle> {
   const bin = findPlayerBinary();
+  const id = crypto.randomBytes(6).toString("hex");
   const ipcPath =
     process.platform === "win32"
-      ? `\\\\.\\pipe\\xmb_mpv_${Date.now()}`
-      : `/tmp/xmb_mpv_${Date.now()}.sock`;
+      ? `\\\\.\\pipe\\xmb_mpv_${Date.now()}_${id}`
+      : `/tmp/xmb_mpv_${Date.now()}_${id}.sock`;
 
   try {
-    fs.unlinkSync(ipcPath);
-  } catch {
-    /* ignore */
+    // Sur *nix, si un vieux socket traîne
+    if (process.platform !== "win32") fs.unlinkSync(ipcPath);
+  } catch { /* ignore */ }
+
+  const args = [...buildAudioArgs(100, ipcPath), url];
+
+  if (process.env.MPV_VERBOSE === "1") {
+    console.log("[mpv] spawn", bin, args.join(" "));
   }
 
-  // ⚠️ Volume forcé à 100%
-  const args = [...buildAudioArgs(100, ipcPath), url];
-  console.log("[mpv] spawn", bin, args.join(" "));
+  const stdioMode: ("ignore" | "inherit")[] =
+    process.env.MPV_VERBOSE === "1" ? ["ignore", "inherit", "inherit"] : ["ignore", "ignore", "ignore"];
 
-  const proc = spawn(bin, args, { stdio: ["ignore", "inherit", "inherit"] });
+  const proc = spawn(bin, args, { stdio: stdioMode });
+
+  // Connexion IPC
   const sock = await connectIpc(ipcPath);
 
+  // Writer JSONL rapide
   const send = (cmd: unknown) =>
     new Promise<void>((resolve, reject) => {
-      sock.write(JSON.stringify(cmd) + "\n", (err) => (err ? reject(err) : resolve()));
+      const payload = JSON.stringify(cmd) + "\n";
+      const ok = sock.write(payload, (err) => (err ? reject(err) : resolve()));
+      // En théorie, on pourrait gérer le drain, mais les messages sont petits
+      if (!ok && process.env.MPV_VERBOSE === "1") {
+        // eslint-disable-next-line no-console
+        console.log("[mpv] backpressure (drain pending)");
+      }
     });
 
   const kill = () => {
-    try {
-      sock.destroy();
-    } catch {
-      /* ignore */
-    }
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      /* ignore */
-    }
+    try { sock.destroy(); } catch {}
+    try { proc.kill("SIGKILL"); } catch {}
   };
 
   proc.once("exit", () => {
-    try {
-      sock.destroy();
-    } catch {
-      /* ignore */
-    }
+    try { sock.destroy(); } catch {}
   });
 
   return { proc, sock, send, kill };
@@ -131,10 +154,8 @@ export async function mpvPause(h: MpvHandle, on: boolean): Promise<void> {
   await h.send({ command: ["set_property", "pause", on] });
 }
 
-// Laisse l'API exister, mais c’est un no-op côté serveur (volume toujours 100)
-export async function mpvVolume(_h: MpvHandle, _v: number): Promise<void> {
-  // no-op
-}
+// Volume no-op (toujours 100 côté serveur)
+export async function mpvVolume(_h: MpvHandle, _v: number): Promise<void> {}
 
 export async function mpvQuit(h: MpvHandle): Promise<void> {
   await h.send({ command: ["quit"] });
@@ -143,9 +164,7 @@ export async function mpvSetLoopFile(h: MpvHandle, on: boolean): Promise<void> {
   await h.send({ command: ["set_property", "loop-file", on ? "inf" : "no"] });
 }
 
-// NEW: Seek commandes
 export async function mpvSeekAbsolute(h: MpvHandle, seconds: number): Promise<void> {
-  // set_property time-pos attend un float en secondes
   await h.send({ command: ["set_property", "time-pos", Math.max(0, seconds)] });
 }
 export async function mpvSeekRelative(h: MpvHandle, deltaSeconds: number): Promise<void> {

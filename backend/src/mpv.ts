@@ -37,6 +37,9 @@ function splitArgs(str: string): string[] {
 function buildAudioArgs(volume: number, ipcPath: string): string[] {
   const args: string[] = [
     "--no-video",
+    "--input-terminal=no",
+    "--term-osd=no",
+    "--load-scripts=no",
     `--volume=${Math.max(0, Math.min(100, volume))}`,
     `--input-ipc-server=${ipcPath}`,
     "--ytdl-format=bestaudio/best",
@@ -79,12 +82,12 @@ function buildAudioArgs(volume: number, ipcPath: string): string[] {
 
 async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Socket> {
   const start = Date.now();
-  let delay = 60;
+  let delay = 10; // plus agressif (avant: 60)
   let lastErr: unknown;
 
   while (Date.now() - start < timeoutMs) {
     try {
-      const sock = net.connect(pipePath);
+      const sock = net.connect(pipePath as any);
       await new Promise<void>((res, rej) => {
         sock.once("connect", () => res());
         sock.once("error", rej);
@@ -93,7 +96,7 @@ async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Sock
     } catch (e) {
       lastErr = e;
       await wait(delay);
-      delay = Math.min(delay * 1.4, 250);
+      delay = Math.min(Math.floor(delay * 1.5), 100); // cap 100ms (avant: 250)
     }
   }
   throw new Error("IPC mpv timeout", { cause: lastErr });
@@ -108,7 +111,6 @@ export async function startMpv(url: string, _volumeIgnored = 100): Promise<MpvHa
       : `/tmp/xmb_mpv_${Date.now()}_${id}.sock`;
 
   try {
-    // Sur *nix, si un vieux socket traîne
     if (process.platform !== "win32") fs.unlinkSync(ipcPath);
   } catch { /* ignore */ }
 
@@ -131,7 +133,6 @@ export async function startMpv(url: string, _volumeIgnored = 100): Promise<MpvHa
     new Promise<void>((resolve, reject) => {
       const payload = JSON.stringify(cmd) + "\n";
       const ok = sock.write(payload, (err) => (err ? reject(err) : resolve()));
-      // En théorie, on pourrait gérer le drain, mais les messages sont petits
       if (!ok && process.env.MPV_VERBOSE === "1") {
         // eslint-disable-next-line no-console
         console.log("[mpv] backpressure (drain pending)");
@@ -153,17 +154,13 @@ export async function startMpv(url: string, _volumeIgnored = 100): Promise<MpvHa
 export async function mpvPause(h: MpvHandle, on: boolean): Promise<void> {
   await h.send({ command: ["set_property", "pause", on] });
 }
-
-// Volume no-op (toujours 100 côté serveur)
 export async function mpvVolume(_h: MpvHandle, _v: number): Promise<void> {}
-
 export async function mpvQuit(h: MpvHandle): Promise<void> {
   await h.send({ command: ["quit"] });
 }
 export async function mpvSetLoopFile(h: MpvHandle, on: boolean): Promise<void> {
   await h.send({ command: ["set_property", "loop-file", on ? "inf" : "no"] });
 }
-
 export async function mpvSeekAbsolute(h: MpvHandle, seconds: number): Promise<void> {
   await h.send({ command: ["set_property", "time-pos", Math.max(0, seconds)] });
 }

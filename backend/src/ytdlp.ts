@@ -226,28 +226,36 @@ async function mapLimit<T, R>(
   });
 }
 
+// 🛠️ Restructuré pour une meilleure gestion des erreurs
 export async function resolveUrlToPlayableItems(url: string): Promise<ResolvedItem[]> {
   const maxConc = intEnv("YTDLP_MAX_CONCURRENCY", 5, 1, 16);
 
   try {
+    // 1. Tenter la résolution rapide de playlist (flat-playlist)
     const flat = await resolvePlaylistFlat(url);
+
     if (flat.length > 0) {
+      // Si on a des items plats (playlist), on les probe en parallèle (avec mapLimit)
       const probed = await mapLimit(flat, maxConc, async (it) => probeSingle(it.url));
       return probed.filter((x): x is ResolvedItem => x !== null);
     }
+    // Si resolvePlaylistFlat n'a rien donné, on passe au probe simple
+    
+  } catch (e) {
+    // Si resolvePlaylistFlat échoue, on tombe ici et on essaie le probe simple
+    if (process.env.YTDLP_VERBOSE === "1") {
+        console.log(`[ytdlp] Flat resolve failed, falling back to single probe: ${e}`);
+    }
+  }
 
-    try {
-      const one = await probeSingle(url);
-      return [one];
-    } catch {
-      return [];
+  // 2. Fallback pour un single (ou si la playlist flat a échoué/était vide)
+  try {
+    const one = await probeSingle(url);
+    return [one];
+  } catch (e) {
+    if (process.env.YTDLP_VERBOSE === "1") {
+        console.log(`[ytdlp] Single probe failed: ${e}`);
     }
-  } catch {
-    try {
-      const one = await probeSingle(url);
-      return [one];
-    } catch {
-      return [];
-    }
+    return [];
   }
 }

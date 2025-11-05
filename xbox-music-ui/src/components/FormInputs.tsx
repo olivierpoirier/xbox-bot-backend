@@ -1,3 +1,4 @@
+// FormInputs.tsx
 import type { ClipboardEvent } from "react";
 import { ClipboardPaste } from "lucide-react";
 import { pickUrlLike } from "../lib/api";
@@ -31,6 +32,8 @@ export default function FormInputs({
     }
   };
 
+  const isButtonDisabled = !!busy || !url || !name;
+
   return (
     <div className="grid gap-2 md:gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[2fr,1.2fr,1.2fr,auto] mb-4">
       {/* URL */}
@@ -47,7 +50,7 @@ export default function FormInputs({
         <button
           onClick={() => pasteInto(setUrl, pickUrlLike)}
           disabled={!!busy}
-          className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 inline-flex items-center gap-2"
+          className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 inline-flex items-center gap-2 text-muted"
         >
           <ClipboardPaste className="w-4 h-4" />
           Coller l’URL
@@ -67,20 +70,28 @@ export default function FormInputs({
         <button
           onClick={() => pasteInto(setName)}
           disabled={!!busy}
-          className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 inline-flex items-center gap-2"
+          className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 inline-flex items-center gap-2 text-muted"
         >
           <ClipboardPaste className="w-4 h-4" />
           Coller le pseudo
         </button>
       </div>
 
-      <button
-        onClick={addToQueue}
-        disabled={!!busy}
-        className="px-4 py-3 rounded-xl bg-blue-600 text-white font-bold disabled:opacity-50"
-      >
-        {busy === "play" ? "Ajout…" : "Ajouter"}
-      </button>
+      {/* Bouton Ajouter thémé */}
+      <div className="sm:col-span-2 lg:col-span-1">
+        <button
+          onClick={addToQueue}
+          disabled={isButtonDisabled}
+          // CLASSE MISE À JOUR ICI:
+          className={`h-full w-full px-4 py-3 rounded-xl transition-all duration-200 ${
+            isButtonDisabled
+              ? "bg-slate-700 text-slate-400 cursor-not-allowed"
+              : "theme-active-button" // <-- Nouvelle classe thémée
+          }`}
+        >
+          {busy === "play" ? "Ajout…" : "Ajouter"}
+        </button>
+      </div>
     </div>
   );
 }

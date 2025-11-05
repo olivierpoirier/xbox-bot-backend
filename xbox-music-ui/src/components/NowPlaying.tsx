@@ -55,7 +55,7 @@ export default function NowPlaying({
               <img
                 src={now.thumb}
                 alt={now.title || "Cover"}
-                className="w-56 h--56 rounded-lg object-cover border border-slate-700"
+                className="w-56 h-56 rounded-lg object-cover border border-slate-700"
               />
             )}
 
@@ -65,7 +65,7 @@ export default function NowPlaying({
                   href={now.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="font-bold text-blue-300 break-words hover:underline"
+                  className="font-semibold break-words hover:underline"
                 >
                   {now.title || now.url}
                 </a>

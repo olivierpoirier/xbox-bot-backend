@@ -12,6 +12,7 @@ import {
   mpvSetLoopFile,
   mpvSeekAbsolute,
   mpvSeekRelative,
+  mpvVolume, // Garder l'import même si la fonction est no-op pour la compatibilité
   type MpvHandle,
 } from "./mpv";
 import {
@@ -50,7 +51,8 @@ const io = new IOServer(server, {
 });
 
 /* -------------------- Types & State -------------------- */
-type Control = { paused: boolean; volume: number; skipSeq: number; repeat: boolean };
+// 🗑️ Retrait du volume de l'état de contrôle
+type Control = { paused: boolean; skipSeq: number; repeat: boolean };
 type Now = {
   url?: string;
   title?: string;
@@ -74,7 +76,8 @@ type QueueItem = {
 };
 
 const state = {
-  control: { paused: false, volume: 100, skipSeq: 0, repeat: false } as Control,
+  // 🗑️ Retrait du volume de l'initialisation
+  control: { paused: false, skipSeq: 0, repeat: false } as Control,
   now: null as Now | null,
   queue: [] as QueueItem[],
 };
@@ -144,29 +147,43 @@ let prefetchSeq = 0;
 /**
  * Lance des probeSingle() pour les éléments "queued" sans métadonnées,
  * uniquement si une piste est effectivement en lecture (startedAt != null).
- * Séquentiel (fiable). Tu peux passer à une concu >1 si besoin.
+ * Exécute les probes en parallèle (Promise.allSettled) pour la vitesse.
  */
 async function prefetchQueuedMetadata(seq: number): Promise<void> {
   if (!state.now || state.now.startedAt == null) return;
 
-  // cibles : dans la file, sans titre ou sans miniature ou sans durée
+  // Cibles: dans la file, sans titre ou sans miniature ou sans durée
   const targets = state.queue.filter(
     (q) => q.status === "queued" && (!q.title || !q.thumb || q.durationSec == null)
   );
 
-  for (const q of targets) {
-    // si un nouveau run a été demandé, on abandonne celui-ci
+  if (targets.length === 0) return;
+
+  // 🚀 Application de la parallélisation
+  // Utilisation de Promise.allSettled pour lancer toutes les requêtes en parallèle
+  const updates = targets.map(async (q) => {
+    // Si un nouveau run a été demandé (via un nouveau 'seq'), on ignore le résultat de ce probe
     if (seq !== prefetchSeq) return;
 
     try {
       const info = await probeSingle(q.url);
+      
+      // Mettre à jour l'état de la file avec les données récupérées
       q.title ||= info.title;
       q.thumb ||= info.thumb;
       if (info.durationSec != null) q.durationSec = info.durationSec;
-      scheduleBroadcast();
+      
     } catch {
-      // on ignore les erreurs de probe en préfetch
+      // On ignore les erreurs de probe en préfetch
     }
+  });
+
+  // Attend que tous les probes parallèles soient terminés (succès ou échec)
+  await Promise.allSettled(updates);
+
+  // Une seule diffusion (broadcast) après que toutes les mises à jour soient terminées
+  if (seq === prefetchSeq) {
+    scheduleBroadcast();
   }
 }
 

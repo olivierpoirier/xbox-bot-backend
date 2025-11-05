@@ -1,3 +1,5 @@
+// src/App.tsx
+
 import { useCallback, useEffect, useState } from "react";
 import { Gamepad2, Rainbow, Palette } from "lucide-react";
 import FormInputs from "./components/FormInputs";
@@ -7,18 +9,21 @@ import Toast from "./components/Toast";
 import useLiveQueue from "./hooks/useLiveQueue";
 import { pickUrlLike } from "./lib/api";
 import PlayerBar from "./components/PlayerBar";
-import ThemeDock, { type ThemeName, THEME_ORDER } from "./components/ThemeDock";
+// Import mis à jour pour récupérer tout depuis le fichier lib/themes
+import ThemeDock from "./components/ThemeDock";
+import { type ThemeName, THEME_ORDER, THEMES_SWATCH, type ThemeMode } from "./lib/themes";
 import type { Now, QueueItem, Control } from "./types";
 
 type Command = "pause" | "resume" | "skip" | "skip_group" | "shuffle" | "repeat" | "seek" | "seek_abs";
-type ThemeMode = "color" | "rainbow";
 
+// --- Définitions de thèmes déplacées/supprimées ---
+/*
 const THEMES: Record<ThemeName, { c1: string; c2: string }> = {
   classic: { c1: "#60a5fa", c2: "#f472b6" },
-  ocean:   { c1: "#22d3ee", c2: "#34d399" },
-  sunset:  { c1: "#f59e0b", c2: "#f472b6" },
-  violet:  { c1: "#a78bfa", c2: "#f472b6" },
+  // ... (supprimé)
 };
+*/
+// --------------------------------------------------
 
 export default function App() {
   const [url, setUrl] = useState<string>("");
@@ -73,13 +78,14 @@ export default function App() {
 
   const clearWithPass = useCallback(() => clear(), [clear]);
 
-  const control: Control = state.control ?? { paused: false, volume: 100, skipSeq: 0, repeat: false };
+  const control: Control = state.control ?? { paused: false, skipSeq: 0, repeat: false };
   const paused = Boolean(control.paused);
   const repeat = Boolean(control.repeat);
   const now: Now | null = state.now ?? null;
   const queue: QueueItem[] = state.queue ?? [];
 
-  const { c1, c2 } = THEMES[theme];
+  // Utiliser THEMES_SWATCH pour récupérer c1 et c2
+  const { c1, c2 } = THEMES_SWATCH[theme];
   const rainbow = mode === "rainbow";
   const rootThemeClass = rainbow ? "theme-rainbow" : `theme-${theme}`;
 
@@ -109,6 +115,7 @@ export default function App() {
               onClick={() => pickColor(THEME_ORDER[(THEME_ORDER.indexOf(theme)+1)%THEME_ORDER.length])}
               className="px-3 py-2 rounded-xl bg-slate-800 text-white border border-slate-700 inline-flex items-center gap-2"
               title="Parcourir les couleurs"
+              aria-pressed={!rainbow}
             >
               <Palette className="w-4 h-4" />
               Couleurs
@@ -147,7 +154,7 @@ export default function App() {
         {toast && <Toast message={toast} clear={() => setToast("")} />}
 
         <footer className="text-center mt-6 text-xs text-muted">
-          Auteur : Olivier Poirier
+          Bot de musique créé par Olivier Poirier, 2025
         </footer>
       </main>
 

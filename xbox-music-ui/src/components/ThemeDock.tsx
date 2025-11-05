@@ -1,17 +1,10 @@
+// src/components/ThemeDock.tsx
+
 import { useMemo, useState } from "react";
 import { Rainbow } from "lucide-react";
+// Import des types et constantes depuis le fichier utilitaire
+import { type ThemeName, THEME_ORDER, THEMES_SWATCH, type ThemeMode } from "../lib/themes";
 
-export type ThemeName = "classic" | "ocean" | "sunset" | "violet";
-export type ThemeMode = "color" | "rainbow";
-
-export const THEME_ORDER: ThemeName[] = ["classic", "ocean", "sunset", "violet"];
-
-const THEME_SWATCH: Record<ThemeName, { c1: string; c2: string; label: string }> = {
-  classic: { c1: "#60a5fa", c2: "#f472b6", label: "Classic" },
-  ocean:   { c1: "#22d3ee", c2: "#34d399", label: "Ocean" },
-  sunset:  { c1: "#f59e0b", c2: "#f472b6", label: "Sunset" },
-  violet:  { c1: "#a78bfa", c2: "#f472b6", label: "Violet" },
-};
 
 interface Props {
   value: ThemeName;
@@ -21,7 +14,8 @@ interface Props {
 
 export default function ThemeDock({ value, mode, onPick }: Props) {
   const [open, setOpen] = useState(false);
-  const current = useMemo(() => THEME_SWATCH[value], [value]);
+  // Utilise la nouvelle constante THEMES_SWATCH
+  const current = useMemo(() => THEMES_SWATCH[value], [value]);
   const isRainbow = mode === "rainbow";
 
   return (
@@ -63,9 +57,9 @@ export default function ThemeDock({ value, mode, onPick }: Props) {
             <div className="my-3 h-px bg-slate-800" />
 
             <div className="text-xs text-muted mb-2">Couleurs</div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2"> {/* J'ai mis 3 colonnes ici pour mieux accueillir 6 thèmes, ajustez si besoin! */}
               {THEME_ORDER.map((t) => {
-                const s = THEME_SWATCH[t];
+                const s = THEMES_SWATCH[t];
                 const selected = !isRainbow && t === value;
                 return (
                   <button

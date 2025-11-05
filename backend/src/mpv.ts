@@ -42,7 +42,8 @@ function buildAudioArgs(volume: number, ipcPath: string): string[] {
     "--load-scripts=no",
     `--volume=${Math.max(0, Math.min(100, volume))}`,
     `--input-ipc-server=${ipcPath}`,
-    "--ytdl-format=bestaudio/best",
+    // 🎧 Qualité audio: forcement m4a/webm de la meilleure qualité disponible
+    "--ytdl-format=bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "--ytdl=yes",
   ];
 
@@ -82,7 +83,7 @@ function buildAudioArgs(volume: number, ipcPath: string): string[] {
 
 async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Socket> {
   const start = Date.now();
-  let delay = 10; // plus agressif (avant: 60)
+  let delay = 10;
   let lastErr: unknown;
 
   while (Date.now() - start < timeoutMs) {
@@ -96,7 +97,7 @@ async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Sock
     } catch (e) {
       lastErr = e;
       await wait(delay);
-      delay = Math.min(Math.floor(delay * 1.5), 100); // cap 100ms (avant: 250)
+      delay = Math.min(Math.floor(delay * 1.5), 100);
     }
   }
   throw new Error("IPC mpv timeout", { cause: lastErr });
@@ -148,13 +149,25 @@ export async function startMpv(url: string, _volumeIgnored = 100): Promise<MpvHa
     try { sock.destroy(); } catch {}
   });
 
+  // 🛠️ Ajout pour la robustesse: gérer les erreurs de processus
+  proc.once("error", (err) => {
+    if (process.env.MPV_VERBOSE === "1") {
+        console.error("[mpv] Process error:", err);
+    }
+    try { sock.destroy(); } catch {}
+  });
+
   return { proc, sock, send, kill };
 }
 
 export async function mpvPause(h: MpvHandle, on: boolean): Promise<void> {
   await h.send({ command: ["set_property", "pause", on] });
 }
-export async function mpvVolume(_h: MpvHandle, _v: number): Promise<void> {}
+
+// Retiré la fonction mpvVolume selon votre demande.
+// Maintenir une version no-op pour éviter les erreurs d'import/appel dans server.ts
+export async function mpvVolume(_h: MpvHandle, _v: number): Promise<void> {} 
+
 export async function mpvQuit(h: MpvHandle): Promise<void> {
   await h.send({ command: ["quit"] });
 }

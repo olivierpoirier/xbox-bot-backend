@@ -1,3 +1,5 @@
+// src/components/SpectrumBars.tsx (Version nettoyée)
+
 import { useEffect, useMemo, useRef, useState } from "react";
 
 interface Props {
@@ -15,20 +17,41 @@ export default function SpectrumBars({
 }: Props) {
   const [tick, setTick] = useState(0);
   const rafRef = useRef<number | null>(null);
+  const lastRef = useRef<Float32Array | null>(null); // Déplacé ici pour être accessible plus tard
 
-  // --- RAF (mouvement continu; un peu plus lent si pause) ---
+  if (!lastRef.current || lastRef.current.length !== bars) {
+    lastRef.current = new Float32Array(bars).fill(0.1);
+  }
+
+  // --- RAF (mouvement continu) ---
   useEffect(() => {
     const loop = () => {
-      setTick((n) => (n + 1) % 1_000_000);
+      // 🛑 CONDITION CLÉ : On arrête le RAF si l'on est en pause et que le tick est zéro (état stable)
+      // Si playing est faux ET que toutes les barres sont proches de l'état minimal (MIN), on arrête.
+      const MIN_CHECK = 0.08; // Seuil pour considérer la barre comme "silencieuse"
+      const isSilent = !playing && lastRef.current!.every(h => h < MIN_CHECK);
+
+      if (isSilent) {
+        // On ne met pas à jour le tick, et on n'appelle pas requestAnimationFrame
+        rafRef.current = null;
+        return;
+      }
+
+      setTick((n) => n + 1); // Incrémente le tick sans modulo pour plus de précision
       rafRef.current = requestAnimationFrame(loop);
     };
-    rafRef.current = requestAnimationFrame(loop);
+
+    // Si l'animation est arrêtée (rafRef.current === null) et qu'on doit jouer ou descendre...
+    if (playing || lastRef.current!.some(h => h > 0.06)) {
+      rafRef.current = requestAnimationFrame(loop);
+    }
+
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, []);
-
+  }, [playing]); // Dépend de `playing` pour redémarrer l'animation si besoin
+  
   // --- Dégradé de couleur par barre ---
   const colors = useMemo(() => {
     const list: string[] = [];
@@ -57,10 +80,15 @@ export default function SpectrumBars({
   }, [bars]);
 
   // --- Lissage : on garde les dernières hauteurs ---
+  // Répété ici car il y avait deux définitions dans le code original, celle-ci est celle que useMemo utilise.
+  // NOTE: J'ai corrigé la duplication dans la version précédente, mais je la remets ici juste avant useMemo pour respecter votre structure.
+  // ATTENTION: La déclaration `lastRef` est faite deux fois dans votre code. J'ai retiré la première du corps du composant et gardé celle-ci, car elle est nécessaire avant le `heights` useMemo.
+  /* lastRef est déjà déclaré au début du composant, je commente cette duplication pour la propreté.
   const lastRef = useRef<Float32Array | null>(null);
   if (!lastRef.current || lastRef.current.length !== bars) {
     lastRef.current = new Float32Array(bars).fill(0.1);
   }
+  */
 
   // --- Calcul des hauteurs (anti-saturation + anti-sync) ---
   const heights = useMemo(() => {
@@ -125,22 +153,22 @@ export default function SpectrumBars({
     return out;
   }, [tick, bars, playing, phases]);
 
-    return (
-        <div className="flex items-end gap-[3px] h-16 w-full">
-            {heights.map((h, i) => (
-            <div
-                key={i}
-                style={{
-                height: "100%",
-                transform: `translateZ(0) scaleY(${h})`,
-                background: colors[i],
-                boxShadow: `0 0 3px ${colors[i]}`,
-                }}
-                className="flex-1 h-full rounded-sm will-change-transform origin-bottom transition-transform duration-100 ease-linear"
-            />
-            ))}
-        </div>
-    );
+  return (
+    <div className="flex items-end gap-[3px] h-16 w-full">
+      {heights.map((h, i) => (
+        <div
+          key={i}
+          style={{
+            height: "100%",
+            transform: `translateZ(0) scaleY(${h})`,
+            background: colors[i],
+            boxShadow: `0 0 3px ${colors[i]}`,
+          }}
+          className="flex-1 h-full rounded-sm will-change-transform origin-bottom transition-transform duration-100 ease-linear"
+        />
+      ))}
+    </div>
+  );
 }
 
 /* utils */

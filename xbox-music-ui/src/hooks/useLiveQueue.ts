@@ -21,7 +21,7 @@ export default function useLiveQueue() {
     ok: true,
     now: null,
     queue: [],
-    control: { paused: false, volume: 100, skipSeq: 0, repeat: false },
+    control: { paused: false, skipSeq: 0, repeat: false },
   });
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState<string | null>(null);

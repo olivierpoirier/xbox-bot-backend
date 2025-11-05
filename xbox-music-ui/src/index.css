@@ -1,57 +1,74 @@
+/* index.css */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* === Tokens sémantiques par défaut (surfaces + textes) === */
 :root {
-  --bg:    #0b1220;   /* fond page neutre */
-  --panel: #0f172a;   /* cartes/panels neutres */
-  --ink:   #e5e7eb;   /* texte principal */
-  --muted: #94a3b8;   /* texte secondaire */
+  --bg: #0b1220; /* fond page neutre */
+  --panel: #0f172a; /* cartes/panels neutres */
+  --ink: #e5e7eb; /* texte principal */
+  --muted: #94a3b8; /* texte secondaire */
 }
 
-/* === Sélecteurs de thème (accents c1/c2) ===
-   -> En mode "color", on TEINTE --bg / --panel avec c1/c2.
-   -> En mode "rainbow", on reste neutre (pas de teinte de surfaces). */
+/* === Sélecteurs de thème (accents c1/c2) === */
 .theme-classic {
   --c1: #60a5fa; --c2: #f472b6;
-  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --bg: color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
   --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
 }
 .theme-ocean {
   --c1: #22d3ee; --c2: #34d399;
-  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --bg: color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
   --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
 }
 .theme-sunset {
   --c1: #f59e0b; --c2: #f472b6;
-  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --bg: color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
   --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
 }
 .theme-violet {
   --c1: #a78bfa; --c2: #f472b6;
-  --bg:    color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --bg: color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
+}
+.theme-pink {
+  --c1: #f472b6; --c2: #e879f9;
+  --bg: color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
+}
+.theme-blue {
+  --c1: #3b82f6; --c2: #22d3ee;
+  --bg: color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
+  --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
+}
+.theme-redblack {
+  --c1: #e31919; --c2: rgb(98, 14, 14);
+  --bg: color-mix(in oklab, #0b1220 92%, var(--c1) 8%);
   --panel: color-mix(in oklab, #0f172a 90%, var(--c2) 10%);
 }
 /* Mode Rainbow = surfaces neutres (pas de teinte) */
 .theme-rainbow { --c1: #22d3ee; --c2: #f472b6; }
+
 
 /* === Centrage global propre === */
 html, body, #root { height: 100%; }
 body { margin: 0; }
 
 /* === UTILITAIRES sémantiques (utilisés par tes composants) === */
-.bg-bg     { background: var(--bg); }
-.bg-panel  { background: var(--panel); }
-.text-ink  { color: var(--ink); }
+.bg-bg    { background: var(--bg); }
+.bg-panel { background: var(--panel); }
+.text-ink { color: var(--ink); }
 .text-muted{ color: var(--muted); }
 
 /* === Flourish coloré en "mode color" uniquement === */
-/* Fond de page légèrement vivant avec c1/c2 */
 .theme-classic .bg-bg,
 .theme-ocean .bg-bg,
 .theme-sunset .bg-bg,
-.theme-violet .bg-bg {
+.theme-violet .bg-bg,
+.theme-pink .bg-bg,
+.theme-blue .bg-bg,
+.theme-redblack .bg-bg {
   background:
     radial-gradient(1200px 600px at -10% -10%,
       color-mix(in oklab, var(--c1) 14%, transparent) 0%, transparent 60%),
@@ -63,13 +80,61 @@ body { margin: 0; }
 .theme-classic .bg-panel,
 .theme-ocean   .bg-panel,
 .theme-sunset  .bg-panel,
-.theme-violet  .bg-panel {
+.theme-violet  .bg-panel,
+.theme-pink .bg-panel,
+.theme-blue .bg-panel,
+.theme-redblack .bg-panel {
   background:
     linear-gradient(135deg,
       color-mix(in oklab, var(--c1) 8%, transparent),
       color-mix(in oklab, var(--c2) 6%, transparent)),
     var(--panel);
 }
+
+/* === Classe de Bouton Principal Thémé === */
+.theme-active-button {
+  background-color: var(--c1);
+  color: var(--ink);
+  font-weight: 700;
+  transition: transform 0.15s ease-out, box-shadow 0.15s ease-out, filter 0.15s ease;
+  box-shadow: 0 4px 12px color-mix(in oklab, var(--c1) 30%, transparent);
+}
+
+.theme-active-button:hover:not(:disabled) {
+  filter: saturate(1.15) brightness(1.05); 
+  transform: translateY(-1px);
+}
+.theme-active-button:active:not(:disabled) {
+  filter: saturate(0.95) brightness(0.9);
+  transform: translateY(1px);
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--c1) 40%, transparent);
+}
+
+
+/* NOUVEAU: Styles pour le bouton "Ajouter" en mode Rainbow */
+.theme-rainbow .theme-active-button {
+  background: linear-gradient(90deg, #22d3ee, #a78bfa, #f472b6, #22d3ee);
+  background-size: 200% 100%;
+  animation: sliderGlow 6s linear infinite, hue 10s linear infinite;
+  box-shadow: 
+    0 0 12px rgba(34, 211, 238, 0.6),
+    0 0 24px rgba(244, 114, 182, 0.4);
+  color: white; 
+  filter: none;
+}
+.theme-rainbow .theme-active-button:hover:not(:disabled) {
+  animation: sliderGlow 4s linear infinite, hue 8s linear infinite;
+  box-shadow: 
+    0 0 16px rgba(34, 211, 238, 0.8),
+    0 0 30px rgba(244, 114, 182, 0.6);
+}
+.theme-rainbow .theme-active-button:active:not(:disabled) {
+  animation: sliderGlow 6s linear infinite, hue 10s linear infinite;
+  box-shadow: 
+    0 0 8px rgba(34, 211, 238, 0.8),
+    0 0 18px rgba(244, 114, 182, 0.4);
+}
+
 
 /* === Slider thémé === */
 .xmb-slider { appearance: none; height: 6px; border-radius: 9999px; outline: none; }
@@ -91,7 +156,7 @@ body { margin: 0; }
   box-shadow: 0 0 12px rgba(244,114,182,0.8); cursor: pointer;
 }
 
-/* === Glow & Rainbow border (inchangés) === */
+/* === Glow & Rainbow border === */
 .neon-glow {
   box-shadow:
     0 0 24px color-mix(in oklab, var(--c2) 18%, transparent),
@@ -102,7 +167,10 @@ body { margin: 0; }
   content: ""; position: absolute; inset: -2px; border-radius: 18px; padding: 2px;
   background: conic-gradient(from 0deg, #22d3ee, #a78bfa, #f472b6, #22d3ee);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor; mask-composite: exclude;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -114,7 +182,8 @@ body { margin: 0; }
   content: ""; position: absolute; inset: 0; border-radius: 12px; filter: blur(12px);
   background: radial-gradient(60% 80% at 50% 50%,
     rgba(34,211,238,0.35), rgba(167,139,250,0.25), rgba(244,114,182,0.2), transparent 70%);
-  pointer-events: none; animation: hue 10s linear infinite;
+  pointer-events: none;
+  animation: hue 10s linear infinite;
 }
 
 
@@ -123,11 +192,14 @@ body { margin: 0; }
 .themed-border::before {
   content: "";
   position: absolute;
-  inset: -2px;                /* même épaisseur que rainbow */
-  border-radius: 0.75rem;     /* suit le rounded-xl / rounded-2xl du composant */
+  inset: -2px;
+  border-radius: 0.75rem;
   padding: 2px;
   background: linear-gradient(135deg, var(--c1), var(--c2));
   -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
@@ -138,30 +210,33 @@ body { margin: 0; }
 
 /* === Bordure dégradée pour <input> (sans pseudo) === */
 .themed-input {
-  border: 1.5px solid transparent;           /* on masque la vraie bordure */
+  border: none; /* <-- Suppression de la bordure native */
+  outline: none; /* <-- Suppression de l'outline du navigateur */
   background:
-    linear-gradient(var(--panel), var(--panel)) padding-box,   /* fond */
-    linear-gradient(135deg, var(--c1), var(--c2)) border-box;  /* bordure dégradée */
+    linear-gradient(var(--panel), var(--panel)) padding-box,
+    linear-gradient(135deg, var(--c1), var(--c2)) border-box;
   transition: box-shadow 150ms ease, background 200ms ease;
+  padding: 1.5px; /* Ajustement du padding */
 }
 
 .themed-input:focus {
   outline: none;
   box-shadow:
-    0 0 0 3px color-mix(in oklab, var(--c1) 24%, transparent),
-    0 0 0 6px color-mix(in oklab, var(--c2) 18%, transparent);
+    0 0 0 2px color-mix(in oklab, var(--c1) 28%, transparent),
+    0 0 0 5px color-mix(in oklab, var(--c2) 20%, transparent);
 }
 
 /* En mode rainbow on évite tout mélange: pas de bordure couleur sur les inputs */
 .theme-rainbow .themed-input {
   background: var(--panel);
-  border: 1px solid #334155;   /* look neutre */
+  border: 1px solid #334155;
   box-shadow: none;
+  padding: initial; /* Rétablit le padding par défaut pour éviter un double effet */
 }
 
 
 /* Bague dégradée pour champs (même look que themed-border) */
-.themed-field { position: relative; border-radius: 0.75rem; } /* 0.75rem = rounded-xl */
+.themed-field { position: relative; border-radius: 0.75rem; }
 .themed-field::before {
   content: "";
   position: absolute;
@@ -170,6 +245,9 @@ body { margin: 0; }
   padding: 2px;
   background: linear-gradient(135deg, var(--c1), var(--c2));
   -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;

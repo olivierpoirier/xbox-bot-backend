@@ -23,7 +23,6 @@ const THEMES: Record<ThemeName, { c1: string; c2: string }> = {
 export default function App() {
   const [url, setUrl] = useState<string>("");
   const [name, setName] = useState<string>("");
-  const [adminPass, setAdminPass] = useState<string>("");
 
   const [mode, setMode] = useState<ThemeMode>(() => {
     try { return (localStorage.getItem("xmb_theme_mode") as ThemeMode) || "color"; } catch { return "color"; }
@@ -40,12 +39,10 @@ export default function App() {
   useEffect(() => {
     try {
       const n = localStorage.getItem("xmb_name"); if (n) setName(n);
-      const p = localStorage.getItem("xmb_admin_pass"); if (p) setAdminPass(p);
     } catch { setToast("Impossible de charger tes préférences locales."); }
   }, [setToast]);
 
   useEffect(() => { try { localStorage.setItem("xmb_name", name || ""); } catch { /* empty */ } }, [name]);
-  useEffect(() => { try { localStorage.setItem("xmb_admin_pass", adminPass || ""); } catch { /* empty */ } }, [adminPass]);
 
   const pasteInto = useCallback(async (setter: (s: string) => void, transform?: (s: string) => string) => {
     try {
@@ -66,15 +63,15 @@ export default function App() {
 
   const sendCommand = useCallback((cmd: Command, arg?: number) => {
     try {
-      command(cmd, arg, adminPass);
+      command(cmd, arg);
       window.setTimeout(() => setBusy(null), 4000);
     } catch {
       setBusy(null);
       setToast(`Commande échouée: ${cmd}`);
     }
-  }, [command, adminPass, setBusy, setToast]);
+  }, [command, setBusy, setToast]);
 
-  const clearWithPass = useCallback(() => clear(adminPass), [clear, adminPass]);
+  const clearWithPass = useCallback(() => clear(), [clear]);
 
   const control: Control = state.control ?? { paused: false, volume: 100, skipSeq: 0, repeat: false };
   const paused = Boolean(control.paused);
@@ -122,7 +119,6 @@ export default function App() {
         <FormInputs
           url={url} setUrl={setUrl}
           name={name} setName={setName}
-          adminPass={adminPass} setAdminPass={setAdminPass}
           addToQueue={addToQueue} pasteInto={pasteInto}
           busy={busy}
           rainbow={rainbow}
@@ -151,7 +147,7 @@ export default function App() {
         {toast && <Toast message={toast} clear={() => setToast("")} />}
 
         <footer className="text-center mt-6 text-xs text-muted">
-          Astuce : définis <code>ADMIN_PASS</code> côté serveur et saisis-le ici pour restreindre certaines actions.
+          Auteur : Olivier Poirier
         </footer>
       </main>
 

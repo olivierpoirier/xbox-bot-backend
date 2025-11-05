@@ -7,8 +7,6 @@ interface Props {
   setUrl: (s: string) => void;
   name: string;
   setName: (s: string) => void;
-  adminPass: string;
-  setAdminPass: (s: string) => void;
   addToQueue: () => void;
   pasteInto: (setter: (s: string) => void, transform?: (s: string) => string) => void;
   busy: string | null;
@@ -18,7 +16,6 @@ interface Props {
 export default function FormInputs({
   url, setUrl,
   name, setName,
-  adminPass, setAdminPass,
   addToQueue, pasteInto, busy, rainbow = false
 }: Props) {
 
@@ -74,27 +71,6 @@ export default function FormInputs({
         >
           <ClipboardPaste className="w-4 h-4" />
           Coller le pseudo
-        </button>
-      </div>
-
-      {/* Admin pass */}
-      <div className="grid gap-2">
-        <div className={formCls}>
-          <input
-            type="password"
-            className="w-full border border-transparent rounded-xl px-3.5 py-3 bg-panel text-ink"
-            placeholder="Mot de passe admin (si requis)"
-            value={adminPass}
-            onChange={(e) => setAdminPass(e.target.value)}
-          />
-        </div>
-        <button
-          onClick={() => pasteInto(setAdminPass)}
-          disabled={!!busy}
-          className="px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 inline-flex items-center gap-2"
-        >
-          <ClipboardPaste className="w-4 h-4" />
-          Coller le mot de passe
         </button>
       </div>
 

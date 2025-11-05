@@ -90,10 +90,10 @@ export default function useLiveQueue() {
     }
   }, []);
 
-  const command = useCallback((cmd: Command, arg?: number, adminPass?: string) => {
+  const command = useCallback((cmd: Command, arg?: number) => {
     try {
       setBusy(cmd);
-      socketRef.current?.emit("command", { cmd, arg, adminPass });
+      socketRef.current?.emit("command", { cmd, arg });
       console.log("[emit] command", { cmd, arg });
     } catch (e) {
       setBusy(null);
@@ -102,10 +102,10 @@ export default function useLiveQueue() {
     }
   }, []);
 
-  const clear = useCallback((adminPass?: string) => {
+  const clear = useCallback(() => {
     try {
       setBusy("clear");
-      socketRef.current?.emit("clear", adminPass);
+      socketRef.current?.emit("clear");
       console.log("[emit] clear");
     } catch (e) {
       setBusy(null);

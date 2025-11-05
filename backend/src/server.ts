@@ -35,7 +35,6 @@ function intEnv(name: string, def: number, min?: number, max?: number): number {
 
 /* -------------------- Server setup -------------------- */
 const PORT = intEnv("PORT", 4000);
-const ADMIN_PASS = (process.env.ADMIN_PASS || "").trim();
 
 const app = express();
 app.use(express.json());
@@ -124,11 +123,6 @@ function scheduleBroadcast(): void {
 
 function pushToast(msg: string): void {
   io.emit("toast", msg);
-}
-
-function checkAdmin(pass?: string): boolean {
-  if (!ADMIN_PASS) return true;
-  return (pass || "") === ADMIN_PASS;
 }
 
 function shuffleQueuedInPlace(): void {
@@ -465,9 +459,7 @@ io.on("connection", (socket) => {
   socket.on("command", async (payload: {
     cmd: "pause" | "resume" | "skip" | "skip_group" | "shuffle" | "repeat" | "seek" | "seek_abs";
     arg?: number;
-    adminPass?: string;
   }) => {
-    if (!checkAdmin(payload?.adminPass)) return socket.emit("toast", "Forbidden (admin)");
 
     const now = state.now;
 
@@ -573,8 +565,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("clear", async (adminPass?: string) => {
-    if (!checkAdmin(adminPass)) return socket.emit("toast", "Forbidden (admin)");
+  socket.on("clear", async () => {
     if (playing?.handle) await mpvQuit(playing.handle).catch(() => {});
     for (const q of state.queue) {
       if (q.status === "queued" || q.status === "playing") q.status = "done";

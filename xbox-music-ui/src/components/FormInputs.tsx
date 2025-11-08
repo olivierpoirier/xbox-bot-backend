@@ -40,7 +40,7 @@ export default function FormInputs({
       <div className="grid gap-2">
         <div className={formCls}>
           <input
-            className="w-full border border-transparent rounded-xl px-3.5 py-3 bg-panel text-ink"
+            className="w-full border border-transparent rounded-xl px-3.5 py-3 bg-panel text-ink focus:outline-none focus:ring-0 focus:border-transparent"
             placeholder="https://youtube.com/watch?v=..."
             value={url}
             onChange={(e) => setUrl(e.target.value)}
@@ -61,7 +61,7 @@ export default function FormInputs({
       <div className="grid gap-2">
         <div className={formCls}>
           <input
-            className="w-full border border-transparent rounded-xl px-3.5 py-3 bg-panel text-ink"
+            className="w-full border border-transparent rounded-xl px-3.5 py-3 bg-panel text-ink focus:outline-none focus:ring-0 focus:border-transparent"
             placeholder="Ton pseudo (optionnel)"
             value={name}
             onChange={(e) => setName(e.target.value)}

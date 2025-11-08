@@ -1,7 +1,8 @@
 // src/App.tsx
 
 import { useCallback, useEffect, useState } from "react";
-import { Gamepad2, Rainbow, Palette } from "lucide-react";
+import { Rainbow, Palette } from "lucide-react";
+import AppIcon from "./assets/Icon.png";
 import FormInputs from "./components/FormInputs";
 import NowPlaying from "./components/NowPlaying";
 import QueueList from "./components/QueueList";
@@ -95,33 +96,40 @@ export default function App() {
   return (
     <div className={`min-h-screen bg-bg text-ink ${rootThemeClass} pb-20`}>
       <main className="max-w-6xl mx-auto px-4 md:px-6 py-6">
-        <header className="mb-5 flex items-center justify-between">
-          <div className="text-center md:text-left flex items-center gap-2">
-            <Gamepad2 className="w-6 h-6 text-ink" />
-            <h1 className="text-2xl md:text-3xl font-bold">Xbox Music Bot</h1>
-          </div>
+      <header className="mb-5 flex flex-col md:flex-row items-center md:items-start justify-between gap-3 md:gap-0">
+        <div className="text-center md:text-left flex items-center gap-2">
+          <img
+            src={AppIcon}
+            alt="Xbox Music Bot"
+            className="w-32 h-32 rounded-lg object-contain"
+          />
+          <h1 className="text-2xl md:text-3xl font-bold">Xbox Music Bot</h1>
+        </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={pickRainbow}
-              className={`px-3 py-2 rounded-xl border ${rainbow ? "bg-pink-600 text-white border-pink-400" : "bg-slate-800 text-white border-slate-700"} inline-flex items-center gap-2`}
-              title="Activer Rainbow"
-              aria-pressed={rainbow}
-            >
-              <Rainbow className="w-4 h-4" />
-              Rainbow
-            </button>
-            <button
-              onClick={() => pickColor(THEME_ORDER[(THEME_ORDER.indexOf(theme)+1)%THEME_ORDER.length])}
-              className="px-3 py-2 rounded-xl bg-slate-800 text-white border border-slate-700 inline-flex items-center gap-2"
-              title="Parcourir les couleurs"
-              aria-pressed={!rainbow}
-            >
-              <Palette className="w-4 h-4" />
-              Couleurs
-            </button>
-          </div>
-        </header>
+        <div className="flex items-center gap-2 mt-2 md:mt-0">
+          <button
+            onClick={pickRainbow}
+            className={`px-3 py-2 rounded-xl border ${
+              rainbow ? "bg-pink-600 text-white border-pink-400" : "bg-slate-800 text-white border-slate-700"
+            } inline-flex items-center gap-2`}
+            title="Activer Rainbow"
+            aria-pressed={rainbow}
+          >
+            <Rainbow className="w-4 h-4" />
+            Rainbow
+          </button>
+
+          <button
+            onClick={() => pickColor(THEME_ORDER[(THEME_ORDER.indexOf(theme)+1)%THEME_ORDER.length])}
+            className="px-3 py-2 rounded-xl bg-slate-800 text-white border border-slate-700 inline-flex items-center gap-2"
+            title="Parcourir les couleurs"
+            aria-pressed={!rainbow}
+          >
+            <Palette className="w-4 h-4" />
+            Couleurs
+          </button>
+        </div>
+      </header>
 
         <FormInputs
           url={url} setUrl={setUrl}

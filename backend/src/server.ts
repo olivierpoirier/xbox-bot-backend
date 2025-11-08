@@ -1,3 +1,4 @@
+// server.ts
 import "dotenv/config";
 import express from "express";
 import http from "http";
@@ -12,13 +13,13 @@ import {
   mpvSetLoopFile,
   mpvSeekAbsolute,
   mpvSeekRelative,
-  mpvVolume, // Garder l'import même si la fonction est no-op pour la compatibilité
   type MpvHandle,
 } from "./mpv";
 import {
   resolveUrlToPlayableItems,
   probeSingle,
   resolveQuick,
+  normalizeUrl,
   type ResolvedItem,
 } from "./ytdlp";
 import { startSpan, pushMetrics, getMetrics, type PlayMetrics } from "./metrics";
@@ -47,11 +48,11 @@ app.use(express.static(publicDir));
 const server = http.createServer(app);
 const io = new IOServer(server, {
   cors: { origin: "*" },
-  perMessageDeflate: false, // LAN: CPU épargné
+  perMessageDeflate: false,
 });
 
 /* -------------------- Types & State -------------------- */
-// 🗑️ Retrait du volume de l'état de contrôle
+// ❌ plus de volume dans le state/control
 type Control = { paused: boolean; skipSeq: number; repeat: boolean };
 type Now = {
   url?: string;
@@ -60,7 +61,7 @@ type Now = {
   addedBy?: string;
   startedAt?: number | null;
   group?: string;
-  durationSec?: number;
+  durationSec?: number | null;
   positionOffsetSec?: number;
 };
 type QueueItem = {
@@ -72,11 +73,10 @@ type QueueItem = {
   addedBy?: string;
   status: "queued" | "playing" | "done" | "error";
   createdAt: number;
-  durationSec?: number; // <-- pour afficher la durée dans la file (optionnel)
+  durationSec?: number;
 };
 
 const state = {
-  // 🗑️ Retrait du volume de l'initialisation
   control: { paused: false, skipSeq: 0, repeat: false } as Control,
   now: null as Now | null,
   queue: [] as QueueItem[],
@@ -97,11 +97,8 @@ let broadcastTimer: NodeJS.Timeout | null = null;
 let lastHash = "";
 
 function computeHash(payload: unknown): string {
-  try {
-    return JSON.stringify(payload);
-  } catch {
-    return String(Math.random());
-  }
+  try { return JSON.stringify(payload); }
+  catch { return String(Math.random()); }
 }
 
 function scheduleBroadcast(): void {
@@ -111,7 +108,6 @@ function scheduleBroadcast(): void {
     const queued = state.queue.filter((q) => q.status === "queued");
     const payload = { ok: true, now: state.now, queue: queued, control: state.control };
 
-    // IMPORTANT : inclure titre/miniature pour refléter les changements de métadonnées
     const h = computeHash({
       now: state.now,
       control: state.control,
@@ -144,52 +140,31 @@ function shuffleQueuedInPlace(): void {
 let prefetchRunning = false;
 let prefetchSeq = 0;
 
-/**
- * Lance des probeSingle() pour les éléments "queued" sans métadonnées,
- * uniquement si une piste est effectivement en lecture (startedAt != null).
- * Exécute les probes en parallèle (Promise.allSettled) pour la vitesse.
- */
 async function prefetchQueuedMetadata(seq: number): Promise<void> {
   if (!state.now || state.now.startedAt == null) return;
 
-  // Cibles: dans la file, sans titre ou sans miniature ou sans durée
   const targets = state.queue.filter(
     (q) => q.status === "queued" && (!q.title || !q.thumb || q.durationSec == null)
   );
-
   if (targets.length === 0) return;
 
-  // 🚀 Application de la parallélisation
-  // Utilisation de Promise.allSettled pour lancer toutes les requêtes en parallèle
   const updates = targets.map(async (q) => {
-    // Si un nouveau run a été demandé (via un nouveau 'seq'), on ignore le résultat de ce probe
     if (seq !== prefetchSeq) return;
-
     try {
       const info = await probeSingle(q.url);
-      
-      // Mettre à jour l'état de la file avec les données récupérées
       q.title ||= info.title;
       q.thumb ||= info.thumb;
       if (info.durationSec != null) q.durationSec = info.durationSec;
-      
-    } catch {
-      // On ignore les erreurs de probe en préfetch
-    }
+    } catch {}
   });
 
-  // Attend que tous les probes parallèles soient terminés (succès ou échec)
   await Promise.allSettled(updates);
-
-  // Une seule diffusion (broadcast) après que toutes les mises à jour soient terminées
-  if (seq === prefetchSeq) {
-    scheduleBroadcast();
-  }
+  if (seq === prefetchSeq) scheduleBroadcast();
 }
 
 function kickPrefetch(): void {
   if (prefetchRunning) return;
-  if (!state.now || state.now.startedAt == null) return; // on n'enclenche qu'après démarrage audio
+  if (!state.now || state.now.startedAt == null) return;
   prefetchRunning = true;
   const seq = ++prefetchSeq;
   prefetchQueuedMetadata(seq).finally(() => {
@@ -197,17 +172,16 @@ function kickPrefetch(): void {
   });
 }
 
-/* ---------- Lecture/auto enchaînement (optimisé) ---------- */
+/* ---------- Lecture/auto enchaînement ---------- */
 async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
   if (playing) return;
 
   const idx = state.queue.findIndex((q) => q.status === "queued");
   if (idx === -1) return;
-
   const item = state.queue[idx];
   item.status = "playing";
 
-  // 1) Probe asynchrone (ne bloque pas l'audio)
+  // Probe async (ne bloque pas)
   const s_probe = startSpan("probeSingle_async", { url: item.url });
   const probePromise = probeSingle(item.url)
     .then((info) => {
@@ -218,7 +192,7 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
           ...(state.now as Now),
           title: item.title,
           thumb: item.thumb,
-          durationSec: info.durationSec,
+          durationSec: info.durationSec ?? state.now?.durationSec ?? null,
         };
         scheduleBroadcast();
       }
@@ -227,7 +201,7 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
     .finally(() => trace?.spans.push(s_probe.end()))
     .catch(() => null);
 
-  // 2) NOW minimal immédiat
+  // NOW minimal immédiat
   state.now = {
     url: item.url,
     title: item.title,
@@ -235,27 +209,44 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
     addedBy: item.addedBy,
     startedAt: null,
     group: item.group,
-    durationSec: undefined,
+    durationSec: null,
     positionOffsetSec: 0,
   };
   scheduleBroadcast();
 
-  // 3) spawn mpv immédiat
+  // Spawn mpv
   const s_spawn = startSpan("mpv_spawn");
   try {
-    const handle = await startMpv(item.url, 100);
+    const handle = await startMpv(item.url);
     trace?.spans.push(s_spawn.end());
 
     playing = { item, handle };
 
+    // Abonnements MPV (récupérer la durée)
+    handle.on((ev) => {
+      if (!state.now) return;
+      if (ev.type === "property-change" && ev.name === "duration") {
+        const d = typeof ev.data === "number" && isFinite(ev.data) ? ev.data : null;
+        if (d != null && d > 0 && state.now.durationSec !== d) {
+          state.now = { ...state.now, durationSec: d };
+          scheduleBroadcast();
+        }
+      }
+    });
+
     const s_ipc = startSpan("mpv_ipc_prep");
     await mpvPause(handle, state.control.paused).catch(() => {});
     await mpvSetLoopFile(handle, state.control.repeat).catch(() => {});
-    state.now = { ...(state.now as Now), startedAt: Date.now(), positionOffsetSec: 0 };
-    scheduleBroadcast();
     trace?.spans.push(s_ipc.end());
 
-    // DÈS QUE LA LECTURE A VRAIMENT COMMENCÉ, on peut précharger le reste
+    // ⚠️ Attendre le vrai démarrage
+    await handle.waitForPlaybackStart();
+
+    // Horloge UI démarre ici
+    state.now = { ...(state.now as Now), startedAt: Date.now(), positionOffsetSec: 0 };
+    scheduleBroadcast();
+
+    // Prefetch une fois la lecture effective
     kickPrefetch();
 
     logNowPlaying();
@@ -268,8 +259,6 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
       scheduleBroadcast();
       setTimeout(() => { void ensurePlayerLoop(); }, 120);
       if (trace) pushMetrics(trace);
-
-      // Quand la piste se termine et que la suivante démarre, ensurePlayerLoop() rappellera kickPrefetch()
     });
 
     void probePromise;
@@ -285,7 +274,7 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
   }
 }
 
-/* ---------- Ticker de progression + console ---------- */
+/* ---------- Ticker progression + console ---------- */
 const TICK_MS = Math.max(250, intEnv("PROGRESS_TICK_MS", 1000));
 const WANT_CONSOLE = process.env.PROGRESS_LOG === "1";
 
@@ -355,25 +344,20 @@ io.on("connection", (socket) => {
     const s_recv = startSpan("fe->be_receive");
     trace.spans.push(s_recv.end({ url: raw }));
 
-    // Résolution rapide (zéro blocage)
     const s_quick = startSpan("resolveQuick", { url: raw });
     let quick: ResolvedItem[] = [];
-    try {
-      quick = await resolveQuick(raw);
-    } catch {}
+    try { quick = await resolveQuick(raw); } catch {}
     trace.spans.push(s_quick.end({ count: quick.length }));
 
-    // Enqueue immédiat
     const s_enqueue = startSpan("enqueue");
-    const groupQuick =
-      quick.length > 1 ? `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` : undefined;
+    const groupQuick = quick.length > 1 ? `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` : undefined;
     const addedBy = (payload.addedBy || "anon").slice(0, 64);
     const nowTs = Date.now();
 
     if (quick.length === 0) {
       state.queue.push({
         id: String(nextId++),
-        url: raw,
+        url: normalizeUrl(raw),
         title: undefined,
         thumb: undefined,
         group: undefined,
@@ -385,7 +369,7 @@ io.on("connection", (socket) => {
       for (const it of quick) {
         state.queue.push({
           id: String(nextId++),
-          url: it.url,
+          url: normalizeUrl(it.url),
           title: it.title,
           thumb: it.thumb,
           group: groupQuick,
@@ -398,11 +382,8 @@ io.on("connection", (socket) => {
     trace.spans.push(s_enqueue.end({ queued: quick.length || 1 }));
 
     scheduleBroadcast();
-
-    // Si la lecture est déjà en cours, on peut précharger tout de suite
     kickPrefetch();
 
-    // Résolution complète en arrière-plan
     const s_full = startSpan("resolveUrlToPlayableItems", { url: raw });
     resolveUrlToPlayableItems(raw)
       .then((full) => {
@@ -417,14 +398,16 @@ io.on("connection", (socket) => {
         const existingByUrl = new Map<string, QueueItem | null>();
         for (const q of state.queue) {
           if (q.status !== "done" && q.url) {
-            if (!existingByUrl.has(q.url)) existingByUrl.set(q.url, q);
+            const key = normalizeUrl(q.url);
+            if (!existingByUrl.has(key)) existingByUrl.set(key, q);
           }
         }
 
         const seen = new Set<string>();
         for (const it of full) {
-          seen.add(it.url);
-          const q = existingByUrl.get(it.url);
+          const key = normalizeUrl(it.url);
+          seen.add(key);
+          const q = existingByUrl.get(key);
           if (q) {
             q.title = q.title || it.title;
             q.thumb = q.thumb || it.thumb;
@@ -433,7 +416,7 @@ io.on("connection", (socket) => {
           } else {
             state.queue.push({
               id: String(nextId++),
-              url: it.url,
+              url: key,
               title: it.title,
               thumb: it.thumb,
               group: targetGroup,
@@ -445,20 +428,22 @@ io.on("connection", (socket) => {
           }
         }
 
-        if (state.now && state.now.url && seen.has(state.now.url)) {
-          const cur = full.find((x) => x.url === state.now!.url);
-          if (cur) {
-            state.now = {
-              ...state.now,
-              title: state.now.title || cur.title,
-              thumb: state.now.thumb || cur.thumb,
-              durationSec: state.now.durationSec ?? cur.durationSec,
-            };
+        if (state.now && state.now.url) {
+          const curKey = normalizeUrl(state.now.url);
+          if (seen.has(curKey)) {
+            const cur = full.find((x) => normalizeUrl(x.url) === curKey);
+            if (cur) {
+              state.now = {
+                ...state.now,
+                title: state.now.title || cur.title,
+                thumb: state.now.thumb || cur.thumb,
+                durationSec: state.now.durationSec ?? cur.durationSec ?? null,
+              };
+            }
           }
         }
 
         scheduleBroadcast();
-        // Et on (re)lance un préfetch pour ce qui reste
         kickPrefetch();
 
         if (full.length > 1) {
@@ -469,7 +454,6 @@ io.on("connection", (socket) => {
         trace.spans.push(s_full.end({ error: e instanceof Error ? e.message : String(e) }));
       });
 
-    // Démarre/continue la lecture
     void ensurePlayerLoop(trace);
   });
 
@@ -477,7 +461,6 @@ io.on("connection", (socket) => {
     cmd: "pause" | "resume" | "skip" | "skip_group" | "shuffle" | "repeat" | "seek" | "seek_abs";
     arg?: number;
   }) => {
-
     const now = state.now;
 
     switch (payload.cmd) {
@@ -492,7 +475,6 @@ io.on("connection", (socket) => {
       case "resume": {
         state.control.paused = false;
         if (now) state.now = { ...now, startedAt: Date.now() };
-        // quand on repart, on (re)peut précharger
         kickPrefetch();
         break;
       }

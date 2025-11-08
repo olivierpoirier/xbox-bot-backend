@@ -1,5 +1,4 @@
-//metrics.ts
-
+// metrics.ts
 import { performance } from "node:perf_hooks";
 
 export type Span = {
@@ -15,9 +14,9 @@ export function startSpan(name: string, data?: Record<string, unknown>) {
     end(extra?: Record<string, unknown>) {
       s.t1 = performance.now();
       if (extra) s.data = { ...(s.data || {}), ...extra };
-      return s; // <-- on renvoie un Span
+      return s;
     },
-    span: s, // handle pour lecture éventuelle, pas nécessaire dans ton flux
+    span: s,
   };
 }
 

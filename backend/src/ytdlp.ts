@@ -1,3 +1,4 @@
+// ytdlp.ts
 import { spawn } from "child_process";
 
 export type ResolvedItem = {
@@ -29,6 +30,26 @@ function splitArgs(str: string): string[] {
   return m.map((s) => (s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s));
 }
 
+/* ------------------- Normalisation URL ------------------- */
+export function normalizeUrl(u: string): string {
+  try {
+    const url = new URL(u);
+    const host = url.hostname.toLowerCase();
+
+    if (host.includes("youtu.be")) {
+      const id = url.pathname.replace(/^\/+/, "");
+      return id ? `https://www.youtube.com/watch?v=${id}` : u;
+    }
+    if (host.includes("youtube.com")) {
+      const id = url.searchParams.get("v");
+      if (id) return `https://www.youtube.com/watch?v=${id}`;
+    }
+    return u;
+  } catch {
+    return u;
+  }
+}
+
 /* ------------------- LRU Cache légère ------------------- */
 type CacheVal<T> = { v: T; exp: number };
 const PROBE_CACHE = new Map<string, CacheVal<ResolvedItem>>();
@@ -39,13 +60,8 @@ const CACHE_MAX = intEnv("YTDLP_CACHE_SIZE", 512, 64, 10_000);
 function cacheGet<K, V>(m: Map<K, CacheVal<V>>, k: K): V | undefined {
   const c = m.get(k);
   if (!c) return;
-  if (c.exp < Date.now()) {
-    m.delete(k);
-    return;
-  }
-  m.delete(k);
-  m.set(k, c);
-  return c.v;
+  if (c.exp < Date.now()) { m.delete(k); return; }
+  m.delete(k); m.set(k, c); return c.v;
 }
 function cacheSet<K, V>(m: Map<K, CacheVal<V>>, k: K, v: V): void {
   if (m.size >= CACHE_MAX) {
@@ -79,11 +95,8 @@ function runYtDlp(args: string[], inputUrl: string): Promise<unknown> {
       clearTimeout(to);
       if (timedOut) return reject(new Error(`yt-dlp timeout after ${timeoutMs}ms`));
       if (code === 0 && out) {
-        try {
-          resolve(JSON.parse(out) as unknown);
-        } catch {
-          reject(new Error("yt-dlp JSON parse error"));
-        }
+        try { resolve(JSON.parse(out) as unknown); }
+        catch { reject(new Error("yt-dlp JSON parse error")); }
       } else {
         reject(new Error(`yt-dlp failed (${code}): ${err || out || "no output"}`));
       }
@@ -95,17 +108,18 @@ function runYtDlp(args: string[], inputUrl: string): Promise<unknown> {
 const PENDING = new Map<string, Promise<ResolvedItem>>();
 
 export async function probeSingle(url: string): Promise<ResolvedItem> {
-  const c = cacheGet(PROBE_CACHE, url);
+  const key = normalizeUrl(url);
+  const c = cacheGet(PROBE_CACHE, key);
   if (c) return c;
 
-  const pend = PENDING.get(url);
+  const pend = PENDING.get(key);
   if (pend) return pend;
 
   const p = (async () => {
-    const jUnknown = await runYtDlp(["-J", "--no-playlist", "--no-warnings"], url);
+    const jUnknown = await runYtDlp(["-J", "--no-playlist", "--no-warnings"], key);
     const j = (typeof jUnknown === "object" && jUnknown !== null ? (jUnknown as Record<string, unknown>) : {});
 
-    const pageUrl = typeof j["webpage_url"] === "string" ? (j["webpage_url"] as string) : url;
+    const pageUrl = typeof j["webpage_url"] === "string" ? (j["webpage_url"] as string) : key;
 
     let thumb: string | undefined =
       typeof j["thumbnail"] === "string" ? (j["thumbnail"] as string) : undefined;
@@ -127,22 +141,23 @@ export async function probeSingle(url: string): Promise<ResolvedItem> {
     const durationSec =
       typeof j["duration"] === "number" && Number.isFinite(j["duration"]) ? (j["duration"] as number) : undefined;
 
-    const res: ResolvedItem = { url: pageUrl, title, thumb, durationSec };
-    cacheSet(PROBE_CACHE, url, res);
+    const res: ResolvedItem = { url: normalizeUrl(pageUrl), title, thumb, durationSec };
+    cacheSet(PROBE_CACHE, key, res);
     return res;
   })()
-    .finally(() => PENDING.delete(url));
+    .finally(() => PENDING.delete(key));
 
-  PENDING.set(url, p);
+  PENDING.set(key, p);
   return p;
 }
 
 /* --------------- Flat playlist (rapide) --------------- */
 async function resolvePlaylistFlat(url: string): Promise<ResolvedItem[]> {
-  const c = cacheGet(FLAT_CACHE, url);
+  const key = normalizeUrl(url);
+  const c = cacheGet(FLAT_CACHE, key);
   if (c) return c;
 
-  const jUnknown = await runYtDlp(["-J", "--flat-playlist", "--no-warnings"], url);
+  const jUnknown = await runYtDlp(["-J", "--flat-playlist", "--no-warnings"], key);
   const j = (typeof jUnknown === "object" && jUnknown !== null ? (jUnknown as Record<string, unknown>) : {});
 
   const entries = Array.isArray(j["entries"]) ? (j["entries"] as unknown[]) : [];
@@ -151,20 +166,22 @@ async function resolvePlaylistFlat(url: string): Promise<ResolvedItem[]> {
   for (const e of entries) {
     if (!e || typeof e !== "object") continue;
     const o = e as Record<string, unknown>;
+
     let u =
       (typeof o["url"] === "string" && (o["url"] as string)) ||
       (typeof o["webpage_url"] === "string" && (o["webpage_url"] as string)) ||
-      url;
+      key;
 
     const id = typeof o["id"] === "string" ? (o["id"] as string) : undefined;
     if (id && (!u || !/^https?:\/\//i.test(u))) {
       u = `https://www.youtube.com/watch?v=${id}`;
     }
+
     const title = typeof o["title"] === "string" ? (o["title"] as string) : undefined;
-    results.push({ url: u, title });
+    results.push({ url: normalizeUrl(u), title });
   }
 
-  cacheSet(FLAT_CACHE, url, results);
+  cacheSet(FLAT_CACHE, key, results);
   return results;
 }
 
@@ -178,7 +195,6 @@ function looksLikeSingle(input: string): boolean {
       if (u.pathname.includes("/playlist")) return false;
       return true;
     }
-    // autres plateformes: assume single
     return true;
   } catch {
     return true;
@@ -187,17 +203,15 @@ function looksLikeSingle(input: string): boolean {
 
 /* --------------- Résolution rapide (ne bloque pas) --------------- */
 export async function resolveQuick(url: string): Promise<ResolvedItem[]> {
-  if (looksLikeSingle(url)) return [{ url }]; // zéro spawn si single évident
+  if (looksLikeSingle(url)) return [{ url: normalizeUrl(url) }];
   try {
     const flat = await resolvePlaylistFlat(url);
     if (flat.length > 0) return flat;
-  } catch {
-    // ignore flat errors
-  }
-  return [{ url }];
+  } catch {}
+  return [{ url: normalizeUrl(url) }];
 }
 
-/* --------------- Résolution complète (avec probes) --------------- */
+/* --------------- mapLimit --------------- */
 async function mapLimit<T, R>(
   arr: readonly T[],
   limit: number,
@@ -226,35 +240,28 @@ async function mapLimit<T, R>(
   });
 }
 
-// 🛠️ Restructuré pour une meilleure gestion des erreurs
+/* --------------- Résolution complète (avec probes) --------------- */
 export async function resolveUrlToPlayableItems(url: string): Promise<ResolvedItem[]> {
   const maxConc = intEnv("YTDLP_MAX_CONCURRENCY", 5, 1, 16);
 
   try {
-    // 1. Tenter la résolution rapide de playlist (flat-playlist)
     const flat = await resolvePlaylistFlat(url);
-
     if (flat.length > 0) {
-      // Si on a des items plats (playlist), on les probe en parallèle (avec mapLimit)
       const probed = await mapLimit(flat, maxConc, async (it) => probeSingle(it.url));
       return probed.filter((x): x is ResolvedItem => x !== null);
     }
-    // Si resolvePlaylistFlat n'a rien donné, on passe au probe simple
-    
   } catch (e) {
-    // Si resolvePlaylistFlat échoue, on tombe ici et on essaie le probe simple
     if (process.env.YTDLP_VERBOSE === "1") {
-        console.log(`[ytdlp] Flat resolve failed, falling back to single probe: ${e}`);
+      console.log(`[ytdlp] Flat resolve failed, falling back to single probe: ${e}`);
     }
   }
 
-  // 2. Fallback pour un single (ou si la playlist flat a échoué/était vide)
   try {
     const one = await probeSingle(url);
     return [one];
   } catch (e) {
     if (process.env.YTDLP_VERBOSE === "1") {
-        console.log(`[ytdlp] Single probe failed: ${e}`);
+      console.log(`[ytdlp] Single probe failed: ${e}`);
     }
     return [];
   }

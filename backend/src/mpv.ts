@@ -1,4 +1,3 @@
-// mpv.ts
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import fs from "fs";
 import net from "net";
@@ -16,10 +15,10 @@ export type MpvHandle = {
   kill: () => void;
 
   on: (fn: (ev: MpvEvent) => void) => void;
-  waitForPlaybackStart: () => Promise<void>;
+  waitForPlaybackStart: (timeoutMs?: number) => Promise<void>;
 };
 
-const DEFAULT_VOLUME = 70; // 🔒 volume fixé côté MPV, aucune API côté serveur/front
+const DEFAULT_VOLUME = 70; // volume fixe
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function findPlayerBinary(): string {
@@ -27,8 +26,11 @@ function findPlayerBinary(): string {
   if (bin) return bin;
 
   const ok = (cmd: string): boolean => {
-    try { return spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0; }
-    catch { return false; }
+    try {
+      return spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0;
+    } catch {
+      return false;
+    }
   };
   if (ok("mpv")) return "mpv";
   if (ok("mpvnet")) return "mpvnet";
@@ -47,42 +49,76 @@ function buildAudioArgs(ipcPath: string): string[] {
     "--input-terminal=no",
     "--term-osd=no",
     "--load-scripts=no",
-    `--volume=${DEFAULT_VOLUME}`,              // ✅ volume figé à 70%
+    `--volume=${DEFAULT_VOLUME}`,
     `--input-ipc-server=${ipcPath}`,
+
+    // 🔒 Format "safe" = ton ancien comportement qui marchait
     "--ytdl-format=bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "--ytdl=yes",
   ];
 
+  // ========== Device audio (comme tu avais déjà) ==========
   const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
   if (audioDevice) {
     args.push(`--audio-device=${audioDevice}`);
-    if (process.env.MPV_VERBOSE === "1") {
-      console.log("[mpv] audio-device =", audioDevice);
-    }
+    console.log("[mpv] audio-device =", audioDevice);
   }
 
+  // ========== Buffer audio ==========
   const bufEnv = (process.env.MPV_AUDIO_BUFFER_SECS || "").trim();
   const bufVal = bufEnv ? Number(bufEnv) : 2;
   if (Number.isFinite(bufVal) && bufVal >= 0 && bufVal <= 10) {
     args.push(`--audio-buffer=${bufVal}`);
   }
 
-  const ytdlpPath = (process.env.YTDLP_BIN || "").trim();
-  if (ytdlpPath) {
-    const quoted = ytdlpPath.includes(" ") ? `"${ytdlpPath}"` : ytdlpPath;
-    args.push(`--script-opts=ytdl_hook-ytdl_path=${quoted}`);
+  // ========== Qualité de sortie (local, ne touche pas YouTube) ==========
+  // Par défaut : 48 kHz stéréo (standard HDMI / consoles)
+  const samplerate = (process.env.MPV_AUDIO_SAMPLERATE || "48000").trim();
+  if (/^\d+$/.test(samplerate)) {
+    args.push(`--audio-samplerate=${samplerate}`);
   }
 
-  const raw: string[] = [];
-  raw.push("force-ipv4=");
-  raw.push("extractor-args=youtube:player_client=android");
-  args.push(`--ytdl-raw-options=${raw.join(",")}`);
+  const channels = (process.env.MPV_AUDIO_CHANNELS || "stereo").trim();
+  if (channels) {
+    args.push(`--audio-channels=${channels}`);
+  }
 
+  // Driver de sortie (sur Windows: wasapi recommandé, sinon laisse vide)
+  const ao = (process.env.MPV_AO || "").trim();
+  if (ao) {
+    args.push(`--ao=${ao}`);
+  }
+
+  // ========== DRC / normalisation optionnelle ==========
+  // MPV_ENABLE_DRC=1 -> petit compresseur/normaliseur pour un son plus constant
+  const enableDRC = (process.env.MPV_ENABLE_DRC || "").trim() === "1";
+  if (enableDRC) {
+    // Filtre "soft" pour lisser les volumes sans être trop agressif
+    args.push("--af-add=lavfi=[dynaudnorm=g=5:f=250:r=0.9:p=0.5]");
+  }
+
+  // Normalisation du downmix surround -> stéréo (facultatif)
+  const normalizeDownmix = (process.env.MPV_AUDIO_NORMALIZE_DOWNMIX || "").trim();
+  if (normalizeDownmix === "yes" || normalizeDownmix === "no") {
+    args.push(`--audio-normalize-downmix=${normalizeDownmix}`);
+  }
+
+  // ========== YTDL raw options (comme ton ancien code) ==========
+  const rawOpts: string[] = [];
+  rawOpts.push("force-ipv4=");
+  rawOpts.push("extractor-args=youtube:player_client=android");
+  if (rawOpts.length > 0) {
+    args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);
+  }
+
+  // ========== Options additionnelles (env) ==========
   const extra = splitArgs(process.env.MPV_ADDITIONAL_OPTS || "");
   args.push(...extra);
 
   return args;
 }
+
+
 
 async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Socket> {
   const start = Date.now();
@@ -103,7 +139,8 @@ async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Sock
       delay = Math.min(Math.floor(delay * 1.5), 100);
     }
   }
-  throw new Error("IPC mpv timeout", { cause: lastErr });
+  console.error("[mpv] IPC timeout", lastErr);
+  throw new Error("IPC mpv timeout", { cause: lastErr as any });
 }
 
 function lineReader(sock: net.Socket, onLine: (l: string) => void) {
@@ -129,41 +166,57 @@ export async function startMpv(url: string): Promise<MpvHandle> {
       ? `\\\\.\\pipe\\xmb_mpv_${Date.now()}_${id}`
       : `/tmp/xmb_mpv_${Date.now()}_${id}.sock`;
 
-  try { if (process.platform !== "win32") fs.unlinkSync(ipcPath); } catch {}
+  try {
+    if (process.platform !== "win32") fs.unlinkSync(ipcPath);
+  } catch {}
 
   const args = [...buildAudioArgs(ipcPath), url];
 
-  if (process.env.MPV_VERBOSE === "1") {
-    console.log("[mpv] spawn", bin, args.join(" "));
-  }
-
-  const stdioMode: ("ignore" | "inherit")[] =
-    process.env.MPV_VERBOSE === "1" ? ["ignore", "inherit", "inherit"] : ["ignore", "ignore", "ignore"];
+  console.log("[mpv] spawn", bin, args.join(" "));
+  const stdioMode: ("ignore" | "inherit")[] = ["ignore", "inherit", "inherit"];
 
   const proc = spawn(bin, args, { stdio: stdioMode });
+  proc.on("error", (e) => console.error("[mpv] proc error:", e));
+  proc.on("exit", (code, sig) => console.log("[mpv] proc exit", { code, sig }));
+
   const sock = await connectIpc(ipcPath);
+  sock.on("error", (e) => console.error("[mpv] socket error:", e));
 
   const listeners: Array<(ev: MpvEvent) => void> = [];
   const on = (fn: (ev: MpvEvent) => void) => listeners.push(fn);
-  const emit = (ev: MpvEvent) => { for (const fn of listeners) { try { fn(ev); } catch {} } };
+  const emit = (ev: MpvEvent) => {
+    for (const fn of listeners) {
+      try {
+        fn(ev);
+      } catch (e) {
+        console.error("[mpv] listener error", e);
+      }
+    }
+  };
 
   const send = (cmd: unknown) =>
-    new Promise<void>((resolve, reject) => {
+    new Promise<void>((resolve) => {
+      if (!sock || (sock as any).writableEnded || sock.destroyed) return resolve();
       const payload = JSON.stringify(cmd) + "\n";
-      const ok = sock.write(payload, (err) => (err ? reject(err) : resolve()));
-      if (!ok && process.env.MPV_VERBOSE === "1") {
-        console.log("[mpv] backpressure (drain pending)");
+      try {
+        sock.write(payload, () => resolve());
+      } catch {
+        return resolve();
       }
     });
 
-  // Observe properties
   await send({ command: ["observe_property", 1, "duration"] });
   await send({ command: ["observe_property", 2, "idle-active"] });
   await send({ command: ["observe_property", 3, "time-pos"] });
 
   let started = false;
-  let startedResolver: (() => void) | null = null;
-  const startedPromise = new Promise<void>((res) => (startedResolver = res));
+  let startReject: ((e: any) => void) | null = null;
+  let startResolve: (() => void) | null = null;
+
+  const startedPromise = new Promise<void>((res, rej) => {
+    startResolve = res;
+    startReject = rej;
+  });
 
   lineReader(sock, (line) => {
     try {
@@ -173,44 +226,121 @@ export async function startMpv(url: string): Promise<MpvHandle> {
         emit({ type: "file-loaded" });
       }
       if (obj?.event === "playback-restart") {
-        if (!started) { started = true; startedResolver?.(); }
+        if (!started) {
+          started = true;
+          startResolve?.();
+        }
         emit({ type: "playback-restart" });
       }
       if (obj?.event === "property-change" && typeof obj.name === "string") {
         emit({ type: "property-change", name: obj.name, data: obj.data });
         if (obj.name === "time-pos" && !started && typeof obj.data === "number") {
-          started = true; startedResolver?.();
+          started = true;
+          startResolve?.();
+        }
+        if (obj.name === "idle-active" && obj.data === true && !started) {
+          console.error("[mpv] idle-active before start (unavailable media?)");
+          startReject?.(new Error("idle-before-start"));
         }
       }
     } catch {
-      // ignore non-JSON lines
+      // ignore
     }
   });
 
-  const kill = () => { try { sock.destroy(); } catch {}; try { proc.kill("SIGKILL"); } catch {} };
-  proc.once("exit", () => { try { sock.destroy(); } catch {} });
-  proc.once("error", () => { try { sock.destroy(); } catch {} });
+  const kill = () => {
+    try {
+      sock.destroy();
+    } catch {}
+    try {
+      proc.kill("SIGKILL");
+    } catch {}
+  };
+  proc.once("exit", () => {
+    try {
+      sock.destroy();
+    } catch {}
+  });
+  proc.once("error", () => {
+    try {
+      sock.destroy();
+    } catch {}
+  });
 
-  return { proc, sock, send, kill, on, waitForPlaybackStart: () => startedPromise };
+  return {
+    proc,
+    sock,
+    send,
+    kill,
+    on,
+    waitForPlaybackStart: (timeoutMs: number = 15000) => {
+      if (started) return Promise.resolve();
+      let to: NodeJS.Timeout | null = null;
+      return new Promise<void>((resolve, reject) => {
+        const doneOk = () => {
+          if (to) clearTimeout(to);
+          resolve();
+        };
+        const doneKo = (e: any) => {
+          if (to) clearTimeout(to);
+          reject(e);
+        };
+        startResolve = doneOk;
+        startReject = doneKo;
+        to = setTimeout(() => {
+          console.error("[mpv] start timeout after", timeoutMs, "ms");
+          doneKo(new Error("start-timeout"));
+        }, timeoutMs);
+      });
+    },
+  };
 }
 
 export async function mpvPause(h: MpvHandle, on: boolean): Promise<void> {
-  await h.send({ command: ["set_property", "pause", on] });
+  try {
+    await h.send({ command: ["set_property", "pause", on] });
+  } catch (e) {
+    console.error("[mpv] pause error:", e);
+  }
 }
 
 export async function mpvQuit(h: MpvHandle): Promise<void> {
-  await h.send({ command: ["quit"] });
+  try {
+    await h.send({ command: ["quit"] });
+  } catch (e) {
+    console.error("[mpv] quit error:", e);
+  }
 }
+
 export async function mpvSetLoopFile(h: MpvHandle, on: boolean): Promise<void> {
-  await h.send({ command: ["set_property", "loop-file", on ? "inf" : "no"] });
+  try {
+    await h.send({ command: ["set_property", "loop-file", on ? "inf" : "no"] });
+  } catch (e) {
+    console.error("[mpv] loop-file error:", e);
+  }
 }
+
 export async function mpvSeekAbsolute(h: MpvHandle, seconds: number): Promise<void> {
-  await h.send({ command: ["set_property", "time-pos", Math.max(0, seconds)] });
+  try {
+    await h.send({ command: ["set_property", "time-pos", Math.max(0, seconds)] });
+  } catch (e) {
+    console.error("[mpv] seek abs error:", e);
+  }
 }
+
 export async function mpvSeekRelative(h: MpvHandle, deltaSeconds: number): Promise<void> {
-  await h.send({ command: ["seek", deltaSeconds, "relative+exact"] });
+  try {
+    await h.send({ command: ["seek", deltaSeconds, "relative+exact"] });
+  } catch (e) {
+    console.error("[mpv] seek rel error:", e);
+  }
 }
+
 export async function mpvLoadFile(h: MpvHandle, url: string, append: boolean = false): Promise<void> {
   const mode = append ? "append" : "replace";
-  await h.send({ command: ["loadfile", url, mode] });
+  try {
+    await h.send({ command: ["loadfile", url, mode] });
+  } catch (e) {
+    console.error("[mpv] loadfile error:", e);
+  }
 }

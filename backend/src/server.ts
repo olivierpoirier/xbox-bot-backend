@@ -1,4 +1,3 @@
-// server.ts
 import "dotenv/config";
 import express from "express";
 import http from "http";
@@ -20,7 +19,9 @@ import {
   probeSingle,
   resolveQuick,
   normalizeUrl,
+  getDirectPlayableUrl,
   type ResolvedItem,
+  AGE_RESTRICTED,
 } from "./ytdlp";
 import { startSpan, pushMetrics, getMetrics, type PlayMetrics } from "./metrics";
 
@@ -52,7 +53,6 @@ const io = new IOServer(server, {
 });
 
 /* -------------------- Types & State -------------------- */
-// ❌ plus de volume dans le state/control
 type Control = { paused: boolean; skipSeq: number; repeat: boolean };
 type Now = {
   url?: string;
@@ -97,8 +97,11 @@ let broadcastTimer: NodeJS.Timeout | null = null;
 let lastHash = "";
 
 function computeHash(payload: unknown): string {
-  try { return JSON.stringify(payload); }
-  catch { return String(Math.random()); }
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return String(Math.random());
+  }
 }
 
 function scheduleBroadcast(): void {
@@ -136,7 +139,7 @@ function shuffleQueuedInPlace(): void {
   }
 }
 
-/* ---------- PREFETCH METADATA après démarrage lecture ---------- */
+/* ---------- PREFETCH METADATA ---------- */
 let prefetchRunning = false;
 let prefetchSeq = 0;
 
@@ -144,7 +147,7 @@ async function prefetchQueuedMetadata(seq: number): Promise<void> {
   if (!state.now || state.now.startedAt == null) return;
 
   const targets = state.queue.filter(
-    (q) => q.status === "queued" && (!q.title || !q.thumb || q.durationSec == null)
+    (q) => q.status === "queued" && (!q.title || !q.thumb || q.durationSec == null),
   );
   if (targets.length === 0) return;
 
@@ -155,7 +158,9 @@ async function prefetchQueuedMetadata(seq: number): Promise<void> {
       q.title ||= info.title;
       q.thumb ||= info.thumb;
       if (info.durationSec != null) q.durationSec = info.durationSec;
-    } catch {}
+    } catch (e) {
+      console.error("[prefetch] probe error for", q.url, e);
+    }
   });
 
   await Promise.allSettled(updates);
@@ -172,57 +177,18 @@ function kickPrefetch(): void {
   });
 }
 
-/* ---------- Lecture/auto enchaînement ---------- */
-async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
-  if (playing) return;
+/* ---------- Lecture/auto enchaînement (+ fallback direct URL) ---------- */
+const START_TIMEOUT_MS = Math.max(5000, intEnv("START_TIMEOUT_MS", 15000));
 
-  const idx = state.queue.findIndex((q) => q.status === "queued");
-  if (idx === -1) return;
-  const item = state.queue[idx];
-  item.status = "playing";
-
-  // Probe async (ne bloque pas)
-  const s_probe = startSpan("probeSingle_async", { url: item.url });
-  const probePromise = probeSingle(item.url)
-    .then((info) => {
-      item.title ||= info.title;
-      item.thumb ||= info.thumb;
-      if (state.now?.url === item.url) {
-        state.now = {
-          ...(state.now as Now),
-          title: item.title,
-          thumb: item.thumb,
-          durationSec: info.durationSec ?? state.now?.durationSec ?? null,
-        };
-        scheduleBroadcast();
-      }
-      return info;
-    })
-    .finally(() => trace?.spans.push(s_probe.end()))
-    .catch(() => null);
-
-  // NOW minimal immédiat
-  state.now = {
-    url: item.url,
-    title: item.title,
-    thumb: item.thumb,
-    addedBy: item.addedBy,
-    startedAt: null,
-    group: item.group,
-    durationSec: null,
-    positionOffsetSec: 0,
-  };
-  scheduleBroadcast();
-
-  // Spawn mpv
-  const s_spawn = startSpan("mpv_spawn");
+async function tryPlayWith(startUrl: string, item: QueueItem, trace?: PlayMetrics): Promise<boolean> {
+  const s_spawn = startSpan("mpv_spawn", { url: startUrl });
   try {
-    const handle = await startMpv(item.url);
+    console.log("[player] tryPlayWith =>", startUrl);
+    const handle = await startMpv(startUrl);
     trace?.spans.push(s_spawn.end());
 
     playing = { item, handle };
 
-    // Abonnements MPV (récupérer la durée)
     handle.on((ev) => {
       if (!state.now) return;
       if (ev.type === "property-change" && ev.name === "duration") {
@@ -235,41 +201,156 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
     });
 
     const s_ipc = startSpan("mpv_ipc_prep");
-    await mpvPause(handle, state.control.paused).catch(() => {});
-    await mpvSetLoopFile(handle, state.control.repeat).catch(() => {});
+    await mpvPause(handle, state.control.paused).catch((e) =>
+      console.error("[player] pause init error", e),
+    );
+    await mpvSetLoopFile(handle, state.control.repeat).catch((e) =>
+      console.error("[player] loop init error", e),
+    );
     trace?.spans.push(s_ipc.end());
 
-    // ⚠️ Attendre le vrai démarrage
-    await handle.waitForPlaybackStart();
+    await handle
+      .waitForPlaybackStart(START_TIMEOUT_MS)
+      .catch(async (e) => {
+        trace?.spans.push(
+          startSpan("mpv_start_fail").end({
+            error: e instanceof Error ? e.message : String(e),
+          }),
+        );
+        console.error("[player] mpv start failed:", e);
+        try {
+          await mpvQuit(handle);
+        } catch {}
+        throw e;
+      });
 
-    // Horloge UI démarre ici
     state.now = { ...(state.now as Now), startedAt: Date.now(), positionOffsetSec: 0 };
     scheduleBroadcast();
 
-    // Prefetch une fois la lecture effective
     kickPrefetch();
-
     logNowPlaying();
 
     handle.proc.once("exit", () => {
+      console.log("[player] mpv exit -> done current");
       item.status = "done";
       state.now = null;
       playing = null;
       clearStatusLine();
       scheduleBroadcast();
-      setTimeout(() => { void ensurePlayerLoop(); }, 120);
+      setTimeout(() => {
+        void ensurePlayerLoop();
+      }, 120);
       if (trace) pushMetrics(trace);
     });
 
-    void probePromise;
-  } catch {
+    return true;
+  } catch (err) {
     trace?.spans.push(s_spawn.end({ error: true }));
+    console.error("[player] failed to start mpv:", err);
+    return false;
+  }
+}
+
+async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
+  if (playing) return;
+
+  const idx = state.queue.findIndex((q) => q.status === "queued");
+  if (idx === -1) return;
+  const item = state.queue[idx];
+
+  try {
+    item.status = "playing";
+    console.log("[player] start item:", item.url);
+
+    state.now = {
+      url: item.url,
+      title: item.title,
+      thumb: item.thumb,
+      addedBy: item.addedBy,
+      startedAt: null,
+      group: item.group,
+      durationSec: null,
+      positionOffsetSec: 0,
+    };
+    scheduleBroadcast();
+
+    const s_probe = startSpan("probeSingle_async", { url: item.url });
+    probeSingle(item.url)
+      .then((info) => {
+        item.title ||= info.title;
+        item.thumb ||= info.thumb;
+        if (state.now?.url === item.url) {
+          state.now = {
+            ...(state.now as Now),
+            title: item.title,
+            thumb: item.thumb,
+            durationSec: info.durationSec ?? state.now?.durationSec ?? null,
+          };
+          scheduleBroadcast();
+        }
+      })
+      .catch((e) => console.error("[player] probeSingle_async error:", e))
+      .finally(() => trace?.spans.push(s_probe.end()));
+
+    // 1) tentative simple (URL d’origine)
+    const ok1 = await tryPlayWith(item.url, item, trace);
+    if (ok1) return;
+
+    // 2) fallback direct
+    const s_direct = startSpan("yt_direct_url", { url: item.url });
+    const direct = await getDirectPlayableUrl(item.url).catch(() => null);
+    trace?.spans.push(s_direct.end({ hasDirect: !!direct }));
+
+    if (direct) {
+      if (state.now) state.now.url = direct;
+      const ok2 = await tryPlayWith(direct, item, trace);
+      if (ok2) return;
+    }
+
+    // Échec => SKIP
+    console.error("[player] both primary and direct playback failed -> skip");
+
+    // 🔔 Vidéo 18+ : toast spécial
+    try {
+      const key = normalizeUrl(item.url);
+      if (AGE_RESTRICTED.has(key)) {
+        pushToast("Miss Noémie est mineure et 100% pure. Skip de la musique...");
+        AGE_RESTRICTED.delete(key);
+      }
+    } catch {
+      // pas grave si ça casse, on ne bloque pas le skip
+    }
+
     item.status = "error";
     state.now = null;
     playing = null;
     clearStatusLine();
     scheduleBroadcast();
-    setTimeout(() => { void ensurePlayerLoop(); }, 600);
+    setTimeout(() => {
+      void ensurePlayerLoop();
+    }, 600);
+    if (trace) pushMetrics(trace);
+  } catch (e) {
+    // Sécurité ultime : si quelque chose pète ici, on marque l’item en erreur et on passe à la suivante
+    console.error("[player] ensurePlayerLoop fatal:", e);
+    try {
+      const key = normalizeUrl(item.url);
+      if (AGE_RESTRICTED.has(key)) {
+        pushToast("Miss Noémie est mineure et 100% pure. Skip de la musique...");
+        AGE_RESTRICTED.delete(key);
+      }
+    } catch {
+      // ignore
+    }
+
+    item.status = "error";
+    state.now = null;
+    playing = null;
+    clearStatusLine();
+    scheduleBroadcast();
+    setTimeout(() => {
+      void ensurePlayerLoop();
+    }, 600);
     if (trace) pushMetrics(trace);
   }
 }
@@ -318,6 +399,7 @@ setInterval(() => {
 
 /* ---------------- Socket handlers ---------------- */
 io.on("connection", (socket) => {
+  console.log("[socket] client connected");
   socket.emit("state", {
     ok: true,
     now: state.now,
@@ -337,256 +419,337 @@ io.on("connection", (socket) => {
   }
 
   socket.on("play", async (payload: { url?: string; addedBy?: string }) => {
-    const raw = String(payload?.url || "").trim();
-    if (!/^https?:\/\//i.test(raw)) return socket.emit("toast", "URL invalide");
+    try {
+      const raw = String(payload?.url || "").trim();
+      if (!/^https?:\/\//i.test(raw)) {
+        console.warn("[socket] invalid URL", raw);
+        return socket.emit("toast", "URL invalide");
+      }
 
-    const trace: PlayMetrics = { id: `${Date.now()}-${Math.random()}`, spans: [], startedAt: Date.now() };
-    const s_recv = startSpan("fe->be_receive");
-    trace.spans.push(s_recv.end({ url: raw }));
+      const trace: PlayMetrics = {
+        id: `${Date.now()}-${Math.random()}`,
+        spans: [],
+        startedAt: Date.now(),
+      };
+      const s_recv = startSpan("fe->be_receive");
+      trace.spans.push(s_recv.end({ url: raw }));
 
-    const s_quick = startSpan("resolveQuick", { url: raw });
-    let quick: ResolvedItem[] = [];
-    try { quick = await resolveQuick(raw); } catch {}
-    trace.spans.push(s_quick.end({ count: quick.length }));
+      const s_quick = startSpan("resolveQuick", { url: raw });
+      let quick: ResolvedItem[] = [];
+      try {
+        quick = await resolveQuick(raw);
+      } catch (e) {
+        console.error("[play] resolveQuick error:", e);
+      }
+      trace.spans.push(s_quick.end({ count: quick.length }));
 
-    const s_enqueue = startSpan("enqueue");
-    const groupQuick = quick.length > 1 ? `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` : undefined;
-    const addedBy = (payload.addedBy || "anon").slice(0, 64);
-    const nowTs = Date.now();
+      const s_enqueue = startSpan("enqueue");
+      const groupQuick =
+        quick.length > 1 ? `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` : undefined;
+      const addedBy = (payload.addedBy || "anon").slice(0, 64);
+      const nowTs = Date.now();
 
-    if (quick.length === 0) {
-      state.queue.push({
-        id: String(nextId++),
-        url: normalizeUrl(raw),
-        title: undefined,
-        thumb: undefined,
-        group: undefined,
-        addedBy,
-        status: "queued",
-        createdAt: nowTs,
-      });
-    } else {
-      for (const it of quick) {
+      if (quick.length === 0) {
         state.queue.push({
           id: String(nextId++),
-          url: normalizeUrl(it.url),
-          title: it.title,
-          thumb: it.thumb,
-          group: groupQuick,
+          url: normalizeUrl(raw),
+          title: undefined,
+          thumb: undefined,
+          group: undefined,
           addedBy,
           status: "queued",
           createdAt: nowTs,
         });
+      } else {
+        for (const it of quick) {
+          state.queue.push({
+            id: String(nextId++),
+            url: normalizeUrl(it.url),
+            title: it.title,
+            thumb: it.thumb,
+            group: groupQuick,
+            addedBy,
+            status: "queued",
+            createdAt: nowTs,
+          });
+        }
       }
-    }
-    trace.spans.push(s_enqueue.end({ queued: quick.length || 1 }));
+      trace.spans.push(s_enqueue.end({ queued: quick.length || 1 }));
 
-    scheduleBroadcast();
-    kickPrefetch();
+      scheduleBroadcast();
+      kickPrefetch();
 
-    const s_full = startSpan("resolveUrlToPlayableItems", { url: raw });
-    resolveUrlToPlayableItems(raw)
-      .then((full) => {
-        trace.spans.push(s_full.end({ count: full.length }));
+      const s_full = startSpan("resolveUrlToPlayableItems", { url: raw });
+      resolveUrlToPlayableItems(raw)
+        .then((full) => {
+          trace.spans.push(s_full.end({ count: full.length }));
 
-        const hadGroup = !!groupQuick;
-        let targetGroup = groupQuick;
-        if (full.length > 1 && !hadGroup) {
-          targetGroup = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        }
-
-        const existingByUrl = new Map<string, QueueItem | null>();
-        for (const q of state.queue) {
-          if (q.status !== "done" && q.url) {
-            const key = normalizeUrl(q.url);
-            if (!existingByUrl.has(key)) existingByUrl.set(key, q);
+          const hadGroup = !!groupQuick;
+          let targetGroup = groupQuick;
+          if (full.length > 1 && !hadGroup) {
+            targetGroup = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
           }
-        }
 
-        const seen = new Set<string>();
-        for (const it of full) {
-          const key = normalizeUrl(it.url);
-          seen.add(key);
-          const q = existingByUrl.get(key);
-          if (q) {
-            q.title = q.title || it.title;
-            q.thumb = q.thumb || it.thumb;
-            if (it.durationSec != null && q.durationSec == null) q.durationSec = it.durationSec;
-            if (!q.group && targetGroup) q.group = targetGroup;
-          } else {
-            state.queue.push({
-              id: String(nextId++),
-              url: key,
-              title: it.title,
-              thumb: it.thumb,
-              group: targetGroup,
-              addedBy,
-              status: "queued",
-              createdAt: Date.now(),
-              durationSec: it.durationSec,
-            });
-          }
-        }
-
-        if (state.now && state.now.url) {
-          const curKey = normalizeUrl(state.now.url);
-          if (seen.has(curKey)) {
-            const cur = full.find((x) => normalizeUrl(x.url) === curKey);
-            if (cur) {
-              state.now = {
-                ...state.now,
-                title: state.now.title || cur.title,
-                thumb: state.now.thumb || cur.thumb,
-                durationSec: state.now.durationSec ?? cur.durationSec ?? null,
-              };
+          const existingByUrl = new Map<string, QueueItem | null>();
+          for (const q of state.queue) {
+            if (q.status !== "done" && q.url) {
+              const key = normalizeUrl(q.url);
+              if (!existingByUrl.has(key)) existingByUrl.set(key, q);
             }
           }
-        }
 
-        scheduleBroadcast();
-        kickPrefetch();
+          const seen = new Set<string>();
+          for (const it of full) {
+            const key = normalizeUrl(it.url);
+            seen.add(key);
+            const q = existingByUrl.get(key);
+            if (q) {
+              q.title = q.title || it.title;
+              q.thumb = q.thumb || it.thumb;
+              if (it.durationSec != null && q.durationSec == null) q.durationSec = it.durationSec;
+              if (!q.group && targetGroup) q.group = targetGroup;
+            } else {
+              state.queue.push({
+                id: String(nextId++),
+                url: key,
+                title: it.title,
+                thumb: it.thumb,
+                group: targetGroup,
+                addedBy,
+                status: "queued",
+                createdAt: Date.now(),
+                durationSec: it.durationSec,
+              });
+            }
+          }
 
-        if (full.length > 1) {
-          pushToast(`Playlist ajoutée: ${full.length} pistes ✅`);
-        }
-      })
-      .catch((e) => {
-        trace.spans.push(s_full.end({ error: e instanceof Error ? e.message : String(e) }));
-      });
+          if (state.now && state.now.url) {
+            const curKey = normalizeUrl(state.now.url);
+            if (seen.has(curKey)) {
+              const cur = full.find((x) => normalizeUrl(x.url) === curKey);
+              if (cur) {
+                state.now = {
+                  ...state.now,
+                  title: state.now.title || cur.title,
+                  thumb: state.now.thumb || cur.thumb,
+                  durationSec: state.now.durationSec ?? cur.durationSec ?? null,
+                };
+              }
+            }
+          }
 
-    void ensurePlayerLoop(trace);
+          scheduleBroadcast();
+          kickPrefetch();
+
+          if (full.length > 1) pushToast(`Playlist ajoutée: ${full.length} pistes ✅`);
+        })
+        .catch((e) => {
+          trace.spans.push(
+            s_full.end({ error: e instanceof Error ? e.message : String(e) }),
+          );
+          console.error("[play] resolveUrlToPlayableItems error:", e);
+        });
+
+      void ensurePlayerLoop(trace);
+    } catch (e) {
+      console.error("[socket.play] fatal:", e);
+      socket.emit("toast", "Erreur interne côté serveur (play).");
+    }
   });
 
   socket.on("command", async (payload: {
     cmd: "pause" | "resume" | "skip" | "skip_group" | "shuffle" | "repeat" | "seek" | "seek_abs";
     arg?: number;
   }) => {
-    const now = state.now;
+    try {
+      const now = state.now;
 
-    switch (payload.cmd) {
-      case "pause": {
-        state.control.paused = true;
-        if (now?.startedAt != null) {
-          const elapsed = (Date.now() - now.startedAt) / 1000;
-          state.now = { ...now, startedAt: null, positionOffsetSec: (now.positionOffsetSec || 0) + elapsed };
-        }
-        break;
-      }
-      case "resume": {
-        state.control.paused = false;
-        if (now) state.now = { ...now, startedAt: Date.now() };
-        kickPrefetch();
-        break;
-      }
-      case "skip": {
-        state.control.skipSeq++;
-        break;
-      }
-      case "skip_group": {
-        state.control.skipSeq++;
-        break;
-      }
-      case "repeat": {
-        state.control.repeat = !!Number(payload.arg ?? (state.control.repeat ? 0 : 1));
-        break;
-      }
-      case "shuffle": {
-        const before = state.queue.filter((q) => q.status === "queued").length;
-        if (before > 1) {
-          shuffleQueuedInPlace();
-          pushToast(`🔀 Mélangé (${before})`);
-        }
-        break;
-      }
-      case "seek": {
-        if (typeof payload.arg === "number") {
+      switch (payload.cmd) {
+        case "pause": {
+          state.control.paused = true;
+
+          // 🔊 Pause réelle côté mpv
           if (playing?.handle) {
-            await mpvSeekRelative(playing.handle, payload.arg).catch(() => {});
+            await mpvPause(playing.handle, true).catch((e) =>
+              console.error("[pause] mpvPause error", e),
+            );
           }
-          if (now) {
-            const base = (now.positionOffsetSec || 0) + (now.startedAt ? (Date.now() - now.startedAt) / 1000 : 0);
-            const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
-            const next = Math.max(0, Math.min(dur, base + payload.arg));
-            state.now = { ...now, positionOffsetSec: next, startedAt: now.startedAt ? Date.now() : null };
+
+          if (now?.startedAt != null) {
+            const elapsed = (Date.now() - now.startedAt) / 1000;
+            state.now = {
+              ...now,
+              startedAt: null,
+              positionOffsetSec: (now.positionOffsetSec || 0) + elapsed,
+            };
           }
+          break;
         }
-        break;
-      }
-      case "seek_abs": {
-        if (typeof payload.arg === "number") {
-          const target = Math.max(0, payload.arg);
+
+        case "resume": {
+          state.control.paused = false;
+
+          // 🔊 Reprise réelle côté mpv
           if (playing?.handle) {
-            await mpvSeekAbsolute(playing.handle, target).catch(() => {});
+            await mpvPause(playing.handle, false).catch((e) =>
+              console.error("[resume] mpvPause error", e),
+            );
           }
-          if (now) {
-            const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
-            const clamped = Math.max(0, Math.min(dur, target));
-            state.now = { ...now, positionOffsetSec: clamped, startedAt: now.startedAt ? Date.now() : null };
-          }
+
+          if (now) state.now = { ...now, startedAt: Date.now() };
+          kickPrefetch();
+          break;
         }
-        break;
-      }
-    }
 
-    if (playing?.handle) {
-      if (payload.cmd === "pause" || payload.cmd === "resume") {
-        await mpvPause(playing.handle, state.control.paused).catch(() => {});
-      }
-      if (payload.cmd === "repeat") {
-        await mpvSetLoopFile(playing.handle, state.control.repeat).catch(() => {});
-      }
-      if (payload.cmd === "skip") {
-        await mpvQuit(playing.handle).catch(() => {});
-      }
-      if (payload.cmd === "skip_group") {
-        const g = playing.item.group;
-        if (g) {
-          for (const q of state.queue) {
-            if (q.status === "queued" && q.group === g) q.status = "done";
-          }
+        case "skip": {
+          state.control.skipSeq++;
+          if (playing?.handle)
+            await mpvQuit(playing.handle).catch((e) => console.error("[skip] quit error", e));
+          break;
         }
-        await mpvQuit(playing.handle).catch(() => {});
-      }
-    }
 
-    scheduleBroadcast();
+        case "skip_group": {
+          state.control.skipSeq++;
+          const g = playing?.item.group;
+          if (g) {
+            for (const q of state.queue) {
+              if (q.status === "queued" && q.group === g) q.status = "done";
+            }
+          }
+          if (playing?.handle)
+            await mpvQuit(playing.handle).catch((e) =>
+              console.error("[skip_group] quit error", e),
+            );
+          break;
+        }
 
-    if (WANT_CONSOLE) {
-      if (payload.cmd === "pause") console.log("\n⏸ pause");
-      if (payload.cmd === "resume") console.log("\n▶ reprise");
-      if (payload.cmd === "shuffle") console.log("\n🔀 shuffle");
-      if (payload.cmd === "repeat") console.log(`\n🔁 repeat: ${state.control.repeat ? "on" : "off"}`);
-      if (payload.cmd === "skip") console.log("\n⏭ skip");
-      if (payload.cmd === "seek" || payload.cmd === "seek_abs") {
-        clearStatusLine();
-        lastStatusPrinted = "";
+        case "repeat": {
+          state.control.repeat = !!Number(payload.arg ?? (state.control.repeat ? 0 : 1));
+          if (playing?.handle)
+            await mpvSetLoopFile(playing.handle, state.control.repeat).catch((e) =>
+              console.error("[repeat] error", e),
+            );
+          break;
+        }
+
+        case "shuffle": {
+          const before = state.queue.filter((q) => q.status === "queued").length;
+          if (before > 1) {
+            shuffleQueuedInPlace();
+            pushToast(`🔀 Mélangé (${before})`);
+            scheduleBroadcast();
+          }
+          break;
+        }
+
+        case "seek": {
+          if (typeof payload.arg === "number") {
+            if (playing?.handle) {
+              await mpvSeekRelative(playing.handle, payload.arg).catch((e) =>
+                console.error("[seek] rel error", e),
+              );
+            }
+            if (now) {
+              const base =
+                (now.positionOffsetSec || 0) +
+                (now.startedAt ? (Date.now() - now.startedAt) / 1000 : 0);
+              const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
+              const next = Math.max(0, Math.min(dur, base + payload.arg));
+              state.now = {
+                ...now,
+                positionOffsetSec: next,
+                startedAt: now.startedAt ? Date.now() : null,
+              };
+            }
+          }
+          break;
+        }
+
+        case "seek_abs": {
+          if (typeof payload.arg === "number") {
+            const target = Math.max(0, payload.arg);
+            if (playing?.handle) {
+              await mpvSeekAbsolute(playing.handle, target).catch((e) =>
+                console.error("[seek] abs error", e),
+              );
+            }
+            if (now) {
+              const dur = now.durationSec ?? Number.POSITIVE_INFINITY;
+              const clamped = Math.max(0, Math.min(dur, target));
+              state.now = {
+                ...now,
+                positionOffsetSec: clamped,
+                startedAt: now.startedAt ? Date.now() : null,
+              };
+            }
+          }
+          break;
+        }
       }
+
+      scheduleBroadcast();
+
+      if (process.env.PROGRESS_LOG === "1") {
+        if (payload.cmd === "pause") console.log("\n⏸ pause");
+        if (payload.cmd === "resume") console.log("\n▶ reprise");
+        if (payload.cmd === "shuffle") console.log("\n🔀 shuffle");
+        if (payload.cmd === "repeat")
+          console.log(`\n🔁 repeat: ${state.control.repeat ? "on" : "off"}`);
+        if (payload.cmd === "skip") console.log("\n⏭ skip");
+        if (payload.cmd === "seek" || payload.cmd === "seek_abs") {
+          clearStatusLine();
+          lastStatusPrinted = "";
+        }
+      }
+    } catch (e) {
+      console.error("[socket.command] fatal:", e);
+      socket.emit("toast", "Erreur interne côté serveur (command).");
     }
   });
 
   socket.on("clear", async () => {
-    if (playing?.handle) await mpvQuit(playing.handle).catch(() => {});
-    for (const q of state.queue) {
-      if (q.status === "queued" || q.status === "playing") q.status = "done";
+    try {
+      if (playing?.handle) await mpvQuit(playing.handle).catch(() => {});
+      for (const q of state.queue) {
+        if (q.status === "queued" || q.status === "playing") q.status = "done";
+      }
+      state.now = null;
+      clearStatusLine();
+      scheduleBroadcast();
+    } catch (e) {
+      console.error("[socket.clear] fatal:", e);
+      socket.emit("toast", "Erreur interne côté serveur (clear).");
     }
-    state.now = null;
-    clearStatusLine();
-    scheduleBroadcast();
   });
 });
 
 /* ----------- Endpoints debug/metrics ----------- */
 app.get("/now", (_req, res) => {
-  if (!state.now) return res.json({ ok: true, now: null });
-  const pos = computePosition(state.now);
-  res.json({
-    ok: true,
-    now: { ...state.now, positionSec: pos, paused: state.control.paused, repeat: state.control.repeat },
-  });
+  try {
+    if (!state.now) return res.json({ ok: true, now: null });
+    const pos = computePosition(state.now);
+    res.json({
+      ok: true,
+      now: {
+        ...state.now,
+        positionSec: pos,
+        paused: state.control.paused,
+        repeat: state.control.repeat,
+      },
+    });
+  } catch (e) {
+    console.error("/now error:", e);
+    res.status(500).json({ ok: false, error: "internal" });
+  }
 });
 
 app.get("/metrics", (_req, res) => {
-  res.json({ ok: true, metrics: getMetrics() });
+  try {
+    res.json({ ok: true, metrics: getMetrics() });
+  } catch (e) {
+    console.error("/metrics error:", e);
+    res.status(500).json({ ok: false });
+  }
 });
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
@@ -603,7 +766,13 @@ function fmtTime(sec: number | null | undefined): string {
   const r = s % 60;
   return `${m.toString()}:${r.toString().padStart(2, "0")}`;
 }
-function renderStatusLine(opts: { paused: boolean; repeat: boolean; pos: number; dur: number | null; title: string }) {
+function renderStatusLine(opts: {
+  paused: boolean;
+  repeat: boolean;
+  pos: number;
+  dur: number | null;
+  title: string;
+}) {
   const icon = opts.paused ? "⏸" : "▶";
   const rep = opts.repeat ? "R:on" : "R:off";
   const left = `${icon} ${fmtTime(opts.pos)} / ${fmtTime(opts.dur)} | ${rep} | `;
@@ -618,11 +787,17 @@ function writeStatusLine(line: string) {
 }
 function clearStatusLine() {
   if (!lastStatusPrinted) return;
-  process.stdout.write("\r" + " ".repeat(process.stdout.columns || lastStatusPrinted.length) + "\r");
+  process.stdout.write(
+    "\r" + " ".repeat(process.stdout.columns || lastStatusPrinted.length) + "\r",
+  );
   lastStatusPrinted = "";
 }
 function logNowPlaying() {
   if (!state.now) return;
   clearStatusLine();
-  console.log(`🎵 Now playing: ${state.now.title || "(sans titre)"} ${state.now.durationSec ? "— " + fmtTime(state.now.durationSec) : ""}`);
+  console.log(
+    `🎵 Now playing: ${state.now.title || "(sans titre)"} ${
+      state.now.durationSec ? "— " + fmtTime(state.now.durationSec) : ""
+    }`,
+  );
 }

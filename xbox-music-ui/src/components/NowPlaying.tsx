@@ -8,9 +8,16 @@ interface Props {
   paused: boolean;
   repeat: boolean;
   busy: string | null;
+  /** Couleur de départ du dégradé pour les barres */
   eqColorFrom?: string;
+  /** Couleur de fin du dégradé pour les barres */
   eqColorTo?: string;
+  /** Active l’animation arc-en-ciel (CSS) autour de la carte et du spectre */
   rainbow?: boolean;
+  /** Hauteur (px) du spectre sur mobile et desktop. Par défaut 64 */
+  spectrumHeightPx?: number;
+  /** Nombre de barres à afficher */
+  spectrumBars?: number;
 }
 
 function formatTime(sec: number): string {
@@ -38,35 +45,51 @@ export default function NowPlaying({
   eqColorFrom = "#60a5fa",
   eqColorTo = "#f472b6",
   rainbow = false,
+  spectrumHeightPx = 64,
+  spectrumBars = 24,
 }: Props) {
   const isBusy = Boolean(busy);
+
   const hasDur = !!now?.durationSec && now.durationSec > 0;
-  const dur = hasDur ? now!.durationSec! : 0;
-  const pos = hasDur ? Math.min(dur, Math.max(0, currentPosSec(now, paused))) : 0;
-  const remaining = hasDur ? dur - pos : 0;
+  const dur = hasDur ? Math.max(0, now!.durationSec!) : 0;
 
-  const cardCls = `bg-bg border border-transparent rounded-xl p-4 shadow-soft ${
-    rainbow ? "neon-glow rainbow-border animate-hue" : "neon-glow themed-border"
-  }`;
+  // Position courante (clampée entre 0 et dur)
+  const pos = hasDur
+    ? Math.min(dur, Math.max(0, currentPosSec(now, paused)))
+    : 0;
 
-  const playingGlow =
-    !paused
-      ? "ring-2 ring-[var(--c1)]/40 shadow-lg shadow-[var(--c1)]/20 animate-pulse"
-      : "";
+  const remaining = hasDur ? Math.max(0, dur - pos) : 0;
+
+  const cardCls = [
+    "bg-bg border border-transparent rounded-xl p-4 shadow-soft",
+    rainbow ? "neon-glow rainbow-border animate-hue" : "neon-glow themed-border",
+  ].join(" ");
+
+  const playingGlow = !paused
+    ? "ring-2 ring-[var(--c1)]/40 shadow-lg shadow-[var(--c1)]/20 animate-pulse"
+    : "";
+
+  // style commun pour forcer une hauteur non-nulle du conteneur du spectre
+  const spectrumStyle: React.CSSProperties = {
+    width: "100%",
+    height: `${spectrumHeightPx}px`,
+  };
 
   return (
-    <section className={cardCls}>
+    <section className={cardCls} aria-label="Lecture en cours">
       <h2 className="text-lg font-semibold mb-2 text-center">Lecture en cours</h2>
 
       {now?.url ? (
         <div className="p-3 rounded-xl bg-panel">
           <div className="flex flex-col md:flex-row gap-4 items-center justify-center text-center md:text-left">
-            
             {now.thumb && (
               <img
                 src={now.thumb}
                 alt={now.title || "Cover"}
-                className={`w-full max-w-[14rem] md:w-56 md:h-56 rounded-lg object-cover border border-slate-700 ${playingGlow}`}
+                className={[
+                  "w-full max-w-[14rem] md:w-56 md:h-56 rounded-lg object-cover border border-slate-700",
+                  playingGlow,
+                ].join(" ")}
               />
             )}
 
@@ -80,13 +103,16 @@ export default function NowPlaying({
                 {now.title || now.url}
               </a>
 
-              {/* Temps + Temps restant */}
-              <div className="mt-1 text-sm font-medium" style={{ color: "var(--c1)" }}>
-                {hasDur
-                  ? `${formatTime(pos)} / ${formatTime(dur)}`
-                  : "Durée inconnue"}
+              {/* Temps courant / durée */}
+              <div
+                className="mt-1 text-sm font-medium"
+                style={{ color: "var(--c1)" }}
+                aria-live="polite"
+              >
+                {hasDur ? `${formatTime(pos)} / ${formatTime(dur)}` : "Durée inconnue"}
               </div>
 
+              {/* Temps restant */}
               {hasDur && (
                 <div className="mt-1 text-xs text-muted">
                   Temps restant: {formatTime(remaining)}
@@ -117,16 +143,35 @@ export default function NowPlaying({
                 )}
               </div>
 
-              {/* Desktop → spectre dans la colonne */}
-              <div className={rainbow ? "mt-4 hidden md:block animate-hue" : "mt-4 hidden md:block"}>
-                <SpectrumBars playing={!paused} bars={24} colorFrom={eqColorFrom} colorTo={eqColorTo} />
+              {/* Desktop → spectre dans la colonne (donner une hauteur explicite) */}
+              <div
+                className={[
+                  "mt-4 hidden md:flex items-end", // md:flex pour aligner les barres en bas si besoin
+                  rainbow ? "animate-hue" : "",
+                ].join(" ")}
+                style={spectrumStyle}
+              >
+                <SpectrumBars
+                  playing={!paused}
+                  bars={spectrumBars}
+                  colorFrom={eqColorFrom}
+                  colorTo={eqColorTo}
+                />
               </div>
             </div>
           </div>
 
-          {/* Mobile → spectre sous l’image */}
-          <div className={rainbow ? "mt-4 md:hidden animate-hue" : "mt-4 md:hidden"}>
-            <SpectrumBars playing={!paused} bars={24} colorFrom={eqColorFrom} colorTo={eqColorTo} />
+          {/* Mobile → spectre sous l’image (hauteur explicite aussi) */}
+          <div
+            className={["mt-4 md:hidden", rainbow ? "animate-hue" : ""].join(" ")}
+            style={spectrumStyle}
+          >
+            <SpectrumBars
+              playing={!paused}
+              bars={spectrumBars}
+              colorFrom={eqColorFrom}
+              colorTo={eqColorTo}
+            />
           </div>
         </div>
       ) : (

@@ -1,4 +1,3 @@
-// metrics.ts
 import { performance } from "node:perf_hooks";
 
 export type Span = {
@@ -23,7 +22,7 @@ export function startSpan(name: string, data?: Record<string, unknown>) {
 export type PlayMetrics = {
   id: string;
   spans: Span[];
-  startedAt: number; // Date.now()
+  startedAt: number;
 };
 
 const LAST: PlayMetrics[] = [];
@@ -31,6 +30,7 @@ const LAST: PlayMetrics[] = [];
 export function pushMetrics(m: PlayMetrics) {
   LAST.push(m);
   while (LAST.length > 100) LAST.shift();
+  console.log(`[metrics] push id=${m.id} spans=${m.spans.length}`);
 }
 
 export function getMetrics() {

@@ -721,6 +721,37 @@ io.on("connection", (socket) => {
       socket.emit("toast", "Erreur interne côté serveur (clear).");
     }
   });
+
+  socket.on("reorder_queue", ({ ids }: { ids: string[] }) => {
+    const queued = state.queue.filter((q) => q.status === "queued");
+    const map = new Map(queued.map((q) => [q.id, q]));
+
+    const reordered: QueueItem[] = [];
+    for (const id of ids) {
+      const it = map.get(id);
+      if (it) reordered.push(it);
+    }
+
+    state.queue = [
+      ...state.queue.filter((q) => q.status !== "queued"),
+      ...reordered,
+    ];
+
+    scheduleBroadcast();
+  });
+
+  socket.on("remove_queue_item", ({ id }: { id: string }) => {
+    const q = state.queue.find((x) => x.id === id);
+    if (!q) return;
+
+    if (playing?.item.id === id && playing.handle) {
+      mpvQuit(playing.handle).catch(() => {});
+    }
+
+    q.status = "done";
+    scheduleBroadcast();
+  });
+
 });
 
 /* ----------- Endpoints debug/metrics ----------- */

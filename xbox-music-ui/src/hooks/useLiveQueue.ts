@@ -14,7 +14,16 @@ export type Command =
 
 export type QueueState = QueueResponse;
 
+type BusyState =
+  | Command
+  | "play"
+  | "clear"
+  | "reorder_queue"
+  | "remove_queue_item"
+  | null;
+
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || "";
+const BUSY_TIMEOUT = 5_000;
 
 export default function useLiveQueue() {
   const [state, setState] = useState<QueueState>({
@@ -23,96 +32,143 @@ export default function useLiveQueue() {
     queue: [],
     control: { paused: false, skipSeq: 0, repeat: false },
   });
-  const [toast, setToast] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
-  const socketRef = useRef<Socket | null>(null);
 
-  // Petit tick pour rafraîchir l’UI du temps local
-  const [, setTick] = useState<number>(0);
+  const [toast, setToast] = useState("");
+  const [busy, setBusy] = useState<BusyState>(null);
+
+  const socketRef = useRef<Socket | null>(null);
+  const busyTimerRef = useRef<number | null>(null);
+
+  // Tick UI
+  const [, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((n) => (n + 1) % 1_000_000), 500);
+    const id = setInterval(() => setTick((n) => n + 1), 500);
     return () => clearInterval(id);
   }, []);
 
+  const startBusy = (value: BusyState) => {
+    setBusy(value);
+
+    if (busyTimerRef.current) {
+      clearTimeout(busyTimerRef.current);
+    }
+
+    busyTimerRef.current = window.setTimeout(() => {
+      setBusy(null);
+      setToast("Le serveur ne répond pas.");
+    }, BUSY_TIMEOUT);
+  };
+
+  const clearBusy = () => {
+    setBusy(null);
+
+    if (busyTimerRef.current) {
+      clearTimeout(busyTimerRef.current);
+      busyTimerRef.current = null;
+    }
+  };
+
+  // Socket init
   useEffect(() => {
-    try {
-      const url = SERVER_URL || undefined;
-      const s = io(url, { transports: ["websocket"] });
-      socketRef.current = s;
+    const s = io(SERVER_URL || undefined, {
+      transports: ["websocket"],
+    });
 
-      s.on("connect", () => {
-        setToast("Connecté ✅");
-        console.log("[socket] connect", { id: s.id });
-      });
-      s.on("disconnect", (reason) => {
-        setToast("Déconnecté");
-        console.warn("[socket] disconnect:", reason);
-      });
-      s.on("connect_error", (err) => {
-        setToast("Erreur de connexion socket.");
-        console.error("[socket] connect_error:", err);
-      });
-      s.on("error", (err: unknown) => {
-        setToast("Erreur socket.");
-        console.error("[socket] error:", err);
-      });
-      s.on("state", (payload: QueueState) => {
-        setState(payload);
-        setBusy(null); // annule un loader en cours
-      });
-      s.on("toast", (msg: string) => {
-        setToast(msg);
-        console.log("[socket] toast:", msg);
-      });
+    socketRef.current = s;
 
-      return () => {
-        try {
-          s.close();
-        } catch (e) {
-          console.error("[socket] close error:", e);
-        }
-      };
-    } catch (e) {
-      setToast("Impossible d’initialiser la connexion.");
-      console.error("[socket] init error:", e);
-    }
+    s.on("connect", () => {
+      setToast("Connecté ✅");
+      console.log("[socket] connect", s.id);
+    });
+
+    s.on("disconnect", (reason) => {
+      setToast("Déconnecté");
+      clearBusy();
+      console.warn("[socket] disconnect:", reason);
+    });
+
+    s.on("connect_error", (err) => {
+      setToast("Erreur de connexion socket.");
+      clearBusy();
+      console.error("[socket] connect_error:", err);
+    });
+
+    s.on("state", (payload: QueueState) => {
+      setState(payload);
+      clearBusy();
+    });
+
+    s.on("toast", (msg: string) => {
+      setToast(msg);
+      console.log("[socket] toast:", msg);
+    });
+
+    return () => {
+      s.close();
+    };
   }, []);
 
-  const play = useCallback((url: string, addedBy?: string) => {
-    try {
-      setBusy("play");
-      socketRef.current?.emit("play", { url, addedBy });
-      console.log("[emit] play", { url, addedBy });
-    } catch (e) {
-      setBusy(null);
-      setToast("Échec de l’envoi de la commande play.");
-      console.error("[emit] play error:", e);
-    }
-  }, []);
+  // Emit sécurisé
+  const emitSafe = useCallback(
+    (event: string, payload?: unknown, busyKey?: BusyState) => {
+      const socket = socketRef.current;
 
-  const command = useCallback((cmd: Command, arg?: number) => {
-    try {
-      setBusy(cmd);
-      socketRef.current?.emit("command", { cmd, arg });
-      console.log("[emit] command", { cmd, arg });
-    } catch (e) {
-      setBusy(null);
-      setToast(`Échec de la commande: ${cmd}.`);
-      console.error(`[emit] command ${cmd} error:`, e);
-    }
-  }, []);
+      if (!socket || !socket.connected) {
+        setToast("Non connecté au serveur.");
+        return;
+      }
+
+      if (busyKey) startBusy(busyKey);
+
+      socket.emit(event, payload);
+      console.log(`[emit] ${event}`, payload);
+    },
+    []
+  );
+
+  // Actions
+  const play = useCallback(
+    (url: string, addedBy?: string) => {
+      emitSafe("play", { url, addedBy }, "play");
+    },
+    [emitSafe]
+  );
+
+  const command = useCallback(
+    (cmd: Command, arg?: number) => {
+      emitSafe("command", { cmd, arg }, cmd);
+    },
+    [emitSafe]
+  );
 
   const clear = useCallback(() => {
-    try {
-      setBusy("clear");
-      socketRef.current?.emit("clear");
-      console.log("[emit] clear");
-    } catch (e) {
-      setBusy(null);
-      setToast("Échec de clear.");
-      console.error("[emit] clear error:", e);
-    }
-  }, []);
+    emitSafe("clear", undefined, "clear");
+  }, [emitSafe]);
 
-  return { state, toast, setToast, play, command, clear, busy, setBusy };
+  const reorderQueue = useCallback(
+    (ids: string[]) => {
+      emitSafe("reorder_queue", { ids }, "reorder_queue");
+    },
+    [emitSafe]
+  );
+
+  const removeQueueItem = useCallback(
+    (id: string) => {
+      emitSafe("remove_queue_item", { id }, "remove_queue_item");
+    },
+    [emitSafe]
+  );
+
+  return {
+    state,
+    toast,
+    setToast,
+    play,
+    command,
+    clear,
+    reorderQueue,
+    removeQueueItem,
+    busy,
+    setBusy,
+  };
 }

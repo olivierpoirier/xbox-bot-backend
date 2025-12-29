@@ -62,7 +62,7 @@ export default function FormInputs({
         <div className={formCls}>
           <input
             className="w-full border border-transparent rounded-xl px-3.5 py-3 bg-panel text-ink focus:outline-none focus:ring-0 focus:border-transparent"
-            placeholder="Ton pseudo (optionnel)"
+            placeholder="Ton pseudo"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />

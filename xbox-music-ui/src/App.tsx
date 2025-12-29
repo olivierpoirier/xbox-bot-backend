@@ -37,7 +37,7 @@ export default function App() {
     try { return (localStorage.getItem("xmb_theme") as ThemeName) || "classic"; } catch { return "classic"; }
   });
 
-  const { state, toast, setToast, play, command, busy, clear, setBusy } = useLiveQueue();
+  const { state, toast, setToast, play, command, busy, clear, setBusy, reorderQueue, removeQueueItem } = useLiveQueue();
 
   useEffect(() => { try { localStorage.setItem("xmb_theme_mode", mode); } catch { /* empty */ } }, [mode]);
   useEffect(() => { try { localStorage.setItem("xmb_theme", theme); } catch { /* empty */ } }, [theme]);
@@ -156,6 +156,8 @@ export default function App() {
             onSkipGroup={() => sendCommand("skip_group")}
             onClear={() => clearWithPass()}
             rainbow={rainbow}
+            onReorder={reorderQueue}
+            onRemove={removeQueueItem}
           />
         </div>
 

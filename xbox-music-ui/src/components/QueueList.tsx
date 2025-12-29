@@ -1,7 +1,9 @@
+import React from "react";
 import {
   DndContext,
   closestCenter,
   PointerSensor,
+  TouchSensor,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
@@ -13,8 +15,43 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ChevronsRight, Trash2, GripVertical } from "lucide-react";
+import { Trash2, GripVertical } from "lucide-react";
 import type { QueueItem } from "../types";
+
+/* =========================
+   Styles CSS Corrigés
+========================= */
+const styles = `
+  @keyframes marquee {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-51%); } 
+  }
+  
+  .marquee-container {
+    mask-image: linear-gradient(to right, black 80%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, black 80%, transparent 100%);
+    overflow: hidden;
+    white-space: nowrap;
+    width: 100%; /* Force le conteneur à respecter la largeur du flex parent */
+  }
+
+  /* On ne déclenche l'animation que si le parent est survolé ou touché */
+  .group:hover .marquee-content,
+  .group:active .marquee-content {
+    display: inline-block;
+    animation: marquee 12s linear infinite;
+    animation-delay: 0.5s;
+    padding-right: 2rem; /* Espace pour la boucle */
+  }
+
+  /* État par défaut pour éviter le débordement avant le survol */
+  .marquee-content {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+`;
 
 interface Props {
   queue: QueueItem[];
@@ -26,9 +63,6 @@ interface Props {
   rainbow?: boolean;
 }
 
-/* =========================
-   Sortable item
-========================= */
 function SortableQueueItem({
   item,
   disabled,
@@ -42,30 +76,33 @@ function SortableQueueItem({
     attributes,
     listeners,
     setNodeRef,
+    setActivatorNodeRef,
     transform,
     transition,
     isDragging,
   } = useSortable({ id: item.id });
 
-  const style = {
+  const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : "auto",
   };
+
+  const displayName = item.title || item.url;
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className="p-2 border border-slate-700 bg-panel rounded-xl flex gap-3 items-center"
+      className="group p-2 border border-slate-700 bg-panel rounded-xl flex gap-3 items-center touch-manipulation relative w-full overflow-hidden"
     >
-      {/* Handle */}
       <button
+        ref={setActivatorNodeRef}
         {...attributes}
         {...listeners}
         disabled={disabled}
-        className="cursor-grab active:cursor-grabbing text-muted hover:text-white"
-        title="Déplacer"
+        className="cursor-grab active:cursor-grabbing text-muted hover:text-white shrink-0"
       >
         <GripVertical className="w-5 h-5" />
       </button>
@@ -73,31 +110,41 @@ function SortableQueueItem({
       {item.thumb && (
         <img
           src={item.thumb}
-          alt={item.title || "thumb"}
-          className="w-12 h-12 rounded-md object-cover border border-slate-700 shrink-0"
+          alt=""
+          className="w-10 h-10 rounded object-cover border border-slate-700 shrink-0"
+          onError={(e) => (e.currentTarget.src = "/fallback-cover.png")}
         />
       )}
 
-      <div className="min-w-0 flex-1">
-        <div className="font-semibold break-words">
-          {item.title ? <span title={item.url}>{item.title}</span> : item.url}
-        </div>
-        <div className="text-xs text-muted">
-          {item.addedBy || "anonyme"} · <b>{item.status}</b>
-          {item.group && (
-            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-slate-800">
-              playlist
+      {/* Le conteneur min-w-0 est la clé pour empêcher le débordement en Flexbox */}
+      <div className="flex-1 min-w-0 overflow-hidden">
+        <div className="marquee-container">
+          <a
+            href={item.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onPointerDown={(e) => e.stopPropagation()}
+            className="text-white hover:text-blue-400 font-medium text-sm block"
+          >
+            <span className="marquee-content will-change-transform">
+              {displayName}
+              {/* Le texte dupliqué pour l'effet de boucle */}
+              <span className="hidden group-hover:inline group-active:inline ml-8 opacity-40">
+                {displayName}
+              </span>
             </span>
-          )}
+          </a>
+        </div>
+        
+        <div className="text-[11px] text-muted truncate">
+          {item.addedBy || "anonyme"} · {item.status}
         </div>
       </div>
 
-      {/* Delete */}
       <button
         disabled={disabled}
         onClick={() => onRemove(item.id)}
-        className="p-2 rounded-lg text-red-500 hover:bg-slate-800 disabled:opacity-40"
-        title="Supprimer"
+        className="p-2 text-red-500 hover:bg-red-500/10 shrink-0"
       >
         <Trash2 className="w-4 h-4" />
       </button>
@@ -105,9 +152,6 @@ function SortableQueueItem({
   );
 }
 
-/* =========================
-   QueueList
-========================= */
 export default function QueueList({
   queue,
   busy,
@@ -118,80 +162,42 @@ export default function QueueList({
   rainbow = false,
 }: Props) {
   const isBusy = Boolean(busy);
-
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 5 },
-    })
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } })
   );
-
-  const cardCls = `bg-bg border border-transparent rounded-xl p-4 shadow-soft ${
-    rainbow ? "neon-glow rainbow-border animate-hue" : "neon-glow themed-border"
-  }`;
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-
     const oldIndex = queue.findIndex((q) => q.id === active.id);
     const newIndex = queue.findIndex((q) => q.id === over.id);
-    if (oldIndex === -1 || newIndex === -1) return;
-
-    const newQueue = arrayMove(queue, oldIndex, newIndex);
-    onReorder(newQueue.map((q) => q.id));
+    onReorder(arrayMove(queue, oldIndex, newIndex).map((q) => q.id));
   };
 
   return (
-    <section className={cardCls}>
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-lg font-semibold">File d’attente</h2>
-
-        <div className="flex items-center gap-2">
-          <button
-            disabled={isBusy}
-            onClick={onSkipGroup}
-            className="px-3 py-2 rounded-xl bg-slate-800 text-white border border-slate-700 inline-flex items-center gap-2"
-          >
-            <ChevronsRight className="w-5 h-5" />
-            Skip playlist
-          </button>
-
-          <button
-            disabled={isBusy}
-            onClick={onClear}
-            className="px-3 py-2 rounded-xl bg-red-600 text-white border border-red-700 inline-flex items-center gap-2"
-          >
-            <Trash2 className="w-5 h-5" />
-            Vider la file
-          </button>
+    <section className={`rounded-xl p-4 bg-bg border border-slate-800 ${rainbow ? "animate-hue" : ""}`}>
+      <style dangerouslySetInnerHTML={{ __html: styles }} />
+      
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold">File d'attente</h2>
+        <div className="flex gap-2">
+          <button onClick={onSkipGroup} className="text-xs p-2 bg-slate-800 rounded-lg border border-slate-700">Skip</button>
+          <button onClick={onClear} className="text-xs p-2 bg-red-600/20 text-red-500 rounded-lg border border-red-600/30">Vider</button>
         </div>
       </div>
 
-      {queue.length ? (
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handleDragEnd}
-        >
-          <SortableContext
-            items={queue.map((q) => q.id)}
-            strategy={verticalListSortingStrategy}
-          >
-            <div className="grid gap-2">
+      <div className="max-w-full overflow-hidden">
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={queue.map((q) => q.id)} strategy={verticalListSortingStrategy}>
+            <div className="flex flex-col gap-2">
               {queue.map((item) => (
-                <SortableQueueItem
-                  key={item.id}
-                  item={item}
-                  disabled={isBusy}
-                  onRemove={onRemove}
-                />
+                <SortableQueueItem key={item.id} item={item} disabled={isBusy} onRemove={onRemove} />
               ))}
             </div>
           </SortableContext>
         </DndContext>
-      ) : (
-        <div className="text-muted">La file est vide.</div>
-      )}
+      </div>
     </section>
   );
 }

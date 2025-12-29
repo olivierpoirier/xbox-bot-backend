@@ -48,47 +48,39 @@ export default function useLiveQueue() {
 
   const startBusy = (value: BusyState) => {
     setBusy(value);
-
-    if (busyTimerRef.current) {
-      clearTimeout(busyTimerRef.current);
-    }
+    if (busyTimerRef.current) clearTimeout(busyTimerRef.current);
 
     busyTimerRef.current = window.setTimeout(() => {
       setBusy(null);
-      setToast("Le serveur ne répond pas.");
+      setToast("⚠️ Serveur non disponible.");
     }, BUSY_TIMEOUT);
   };
 
   const clearBusy = () => {
     setBusy(null);
-
     if (busyTimerRef.current) {
       clearTimeout(busyTimerRef.current);
       busyTimerRef.current = null;
     }
   };
 
-  // Socket init
   useEffect(() => {
-    const s = io(SERVER_URL || undefined, {
-      transports: ["websocket"],
-    });
-
+    const s = io(SERVER_URL || undefined, { transports: ["websocket"] });
     socketRef.current = s;
 
     s.on("connect", () => {
-      setToast("Connecté ✅");
+      setToast("🔗 Connexion établie");
       console.log("[socket] connect", s.id);
     });
 
     s.on("disconnect", (reason) => {
-      setToast("Déconnecté");
+      setToast("⚡ Déconnecté du serveur");
       clearBusy();
       console.warn("[socket] disconnect:", reason);
     });
 
     s.on("connect_error", (err) => {
-      setToast("Erreur de connexion socket.");
+      setToast("❌ Erreur de connexion");
       clearBusy();
       console.error("[socket] connect_error:", err);
     });
@@ -99,76 +91,44 @@ export default function useLiveQueue() {
     });
 
     s.on("toast", (msg: string) => {
-      setToast(msg);
+      setToast(`💬 ${msg}`);
       console.log("[socket] toast:", msg);
     });
 
+    // ✅ ici on ferme le socket correctement
     return () => {
       s.close();
     };
   }, []);
 
-  // Emit sécurisé
+
   const emitSafe = useCallback(
     (event: string, payload?: unknown, busyKey?: BusyState) => {
       const socket = socketRef.current;
-
       if (!socket || !socket.connected) {
-        setToast("Non connecté au serveur.");
+        setToast("❌ Pas connecté au serveur");
         return;
       }
-
       if (busyKey) startBusy(busyKey);
-
       socket.emit(event, payload);
       console.log(`[emit] ${event}`, payload);
     },
     []
   );
 
-  // Actions
-  const play = useCallback(
-    (url: string, addedBy?: string) => {
-      emitSafe("play", { url, addedBy }, "play");
-    },
-    [emitSafe]
-  );
-
-  const command = useCallback(
-    (cmd: Command, arg?: number) => {
-      emitSafe("command", { cmd, arg }, cmd);
-    },
-    [emitSafe]
-  );
-
-  const clear = useCallback(() => {
-    emitSafe("clear", undefined, "clear");
+  const play = useCallback((url: string, addedBy?: string) => {
+    emitSafe("play", { url, addedBy }, "play");
   }, [emitSafe]);
 
-  const reorderQueue = useCallback(
-    (ids: string[]) => {
-      emitSafe("reorder_queue", { ids }, "reorder_queue");
-    },
-    [emitSafe]
-  );
+  const command = useCallback((cmd: Command, arg?: number) => {
+    emitSafe("command", { cmd, arg }, cmd);
+  }, [emitSafe]);
 
-  const removeQueueItem = useCallback(
-    (id: string) => {
-      emitSafe("remove_queue_item", { id }, "remove_queue_item");
-    },
-    [emitSafe]
-  );
+  const clear = useCallback(() => emitSafe("clear", undefined, "clear"), [emitSafe]);
 
-  return {
-    state,
-    toast,
-    setToast,
-    play,
-    command,
-    clear,
-    reorderQueue,
-    removeQueueItem,
-    busy,
-    setBusy,
-  };
+  const reorderQueue = useCallback((ids: string[]) => emitSafe("reorder_queue", { ids }, "reorder_queue"), [emitSafe]);
+
+  const removeQueueItem = useCallback((id: string) => emitSafe("remove_queue_item", { id }, "remove_queue_item"), [emitSafe]);
+
+  return { state, toast, setToast, play, command, clear, reorderQueue, removeQueueItem, busy, setBusy };
 }

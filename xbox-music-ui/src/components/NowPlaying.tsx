@@ -85,13 +85,20 @@ export default function NowPlaying({
             {now.thumb && (
               <img
                 src={now.thumb}
-                alt={now.title || "Cover"}
+                alt={now.title || "cover"}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.src = "/fallback-cover.png";
+                }}
                 className={[
                   "w-full max-w-[14rem] md:w-56 md:h-56 rounded-lg object-cover border border-slate-700",
                   playingGlow,
                 ].join(" ")}
               />
             )}
+
 
             <div className="flex-1 min-w-0 flex flex-col items-center md:items-start justify-center">
               <a

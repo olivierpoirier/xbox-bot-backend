@@ -361,54 +361,30 @@ export async function resolveQuick(url: string): Promise<ResolvedItem[]> {
   return [{ url: normalizeUrl(url) }];
 }
 
-/* --------------- mapLimit --------------- */
-async function mapLimit<T, R>(
-  arr: readonly T[],
-  limit: number,
-  worker: (t: T, i: number) => Promise<R>,
-): Promise<readonly (R | null)[]> {
-  const results: (R | null)[] = new Array(arr.length).fill(null);
-  let i = 0;
-  let active = 0;
-
-  return new Promise((resolve) => {
-    const next = (): void => {
-      if (i >= arr.length && active === 0) return resolve(results);
-      while (active < limit && i < arr.length) {
-        const cur = i++;
-        active++;
-        worker(arr[cur], cur)
-          .then((r) => {
-            results[cur] = r;
-          })
-          .catch((e) => {
-            console.error("[ytdlp] worker error:", e);
-            results[cur] = null;
-          })
-          .finally(() => {
-            active--;
-            next();
-          });
-      }
-    };
-    next();
-  });
-}
-
 /* --------------- Résolution complète --------------- */
 export async function resolveUrlToPlayableItems(url: string): Promise<ResolvedItem[]> {
-  const maxConc = intEnv("YTDLP_MAX_CONCURRENCY", 5, 1, 16);
+  // On ne garde maxConc que si on décide de l'utiliser plus tard, 
+  // mais pour l'instant on veut éviter le probing de masse.
+  // const maxConc = intEnv("YTDLP_MAX_CONCURRENCY", 5, 1, 16);
 
   try {
+    // 1. On tente la récupération rapide ("flat")
     const flat = await resolvePlaylistFlat(url);
+    
     if (flat.length > 0) {
-      const probed = await mapLimit(flat, maxConc, async (it) => probeSingle(it.url));
-      return probed.filter((x): x is ResolvedItem => x !== null);
+      // OPTIMISATION MAJEURE ICI :
+      // Avant : On faisait un `mapLimit` pour probe chaque item (Lent + Risque 429)
+      // Maintenant : On retourne direct la liste (URL + Titre).
+      // Le backend (server.ts) se chargera de charger les thumbnails un par un via le prefetch.
+      console.log(`[ytdlp] Playlist detected: ${flat.length} items. Returning flat list immediately.`);
+      return flat;
     }
   } catch (e) {
     console.warn("[ytdlp] Flat resolve failed, fallback single:", e);
   }
 
+  // 2. Si ce n'est pas une playlist (ou si flat a échoué), on probe l'URL unique
+  // Là on veut le détail complet tout de suite pour lancer la lecture.
   try {
     const one = await probeSingle(url);
     return [one];

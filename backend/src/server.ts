@@ -143,28 +143,45 @@ function shuffleQueuedInPlace(): void {
 let prefetchRunning = false;
 let prefetchSeq = 0;
 
+// Ajoute cette petite fonction utilitaire en haut du fichier ou juste avant prefetchQueuedMetadata
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function prefetchQueuedMetadata(seq: number): Promise<void> {
   if (!state.now || state.now.startedAt == null) return;
 
+  // On cible les items qui n'ont pas encore de titre, de thumb ou de durée
   const targets = state.queue.filter(
     (q) => q.status === "queued" && (!q.title || !q.thumb || q.durationSec == null),
   );
+
   if (targets.length === 0) return;
 
-  const updates = targets.map(async (q) => {
+  // MODIFICATION ICI : On passe d'un traitement parallèle (map) à une boucle séquentielle (for...of)
+  for (const q of targets) {
+    // Si une nouvelle séquence de prefetch a été lancée entre temps (ex: skip, clear), on arrête tout.
     if (seq !== prefetchSeq) return;
+
     try {
+      // On récupère les infos pour UN item
       const info = await probeSingle(q.url);
-      q.title ||= info.title;
-      q.thumb ||= info.thumb;
-      if (info.durationSec != null) q.durationSec = info.durationSec;
+      
+      let changed = false;
+      if (!q.title && info.title) { q.title = info.title; changed = true; }
+      if (!q.thumb && info.thumb) { q.thumb = info.thumb; changed = true; }
+      if (q.durationSec == null && info.durationSec != null) { q.durationSec = info.durationSec; changed = true; }
+
+      // Si on a mis à jour des infos, on prévient le frontend immédiatement pour voir l'image apparaître
+      if (changed) scheduleBroadcast();
+
+      // IMPORTANT : On attend un peu (300ms à 1s) avant de faire la suivante pour éviter le rate-limit YouTube
+      await sleep(500); 
+
     } catch (e) {
       console.error("[prefetch] probe error for", q.url, e);
+      // En cas d'erreur, on attend aussi un peu pour ne pas spammer en boucle
+      await sleep(1000);
     }
-  });
-
-  await Promise.allSettled(updates);
-  if (seq === prefetchSeq) scheduleBroadcast();
+  }
 }
 
 function kickPrefetch(): void {

@@ -1,0 +1,11 @@
+{
+    "client_id": "59093e105b02481bafbc2ee27e5af99d",
+    "client_secret": "6b01ba03904c43308c5a117cdf72f307",
+    "redirect_url": "http://127.0.0.1:4000/spotify/callback",
+    "access_token": "BQCnaQJiCpVTDO89LIjHZ8jpdafzkqa1C7jTHSLoS0RqY6Gh1dwOd9cAsXC6FbXGKEeixUM1vNnIMnUwGJC6ZP2Z5Bu1Ld10q5GxE9g2lPlcEGgOPKePzqdw899mvb4fJQWs0RNsgWydo_pyiWYHngE_av2wDJUPX_0LEsnAqWlqU1V620DYdz-UZ-luW-0sRN-F0u-FOe8yFVI52Gsfj4TaszSj9AE",
+    "refresh_token": "AQBlInMCiqObHOsvN52VLesWK26aF8rv_od-1qm-QH_scKBU40eEQv_twbo95NyNm7tyb15dAhmYGDRMZDUoVEzEoaiv1S8G3DuycQDvWyML3NZyW4_u_e9hOuHtoaL_SL8",
+    "expires_in": 3600,
+    "expiry": 1767065264320,
+    "token_type": "Bearer",
+    "market": "CA"
+}

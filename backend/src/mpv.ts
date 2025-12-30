@@ -1,7 +1,9 @@
+//mpv.ts
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import fs from "fs";
 import net from "net";
 import crypto from "crypto";
+import play from "play-dl";
 
 export type MpvEvent =
   | { type: "file-loaded" }
@@ -52,27 +54,33 @@ function buildAudioArgs(ipcPath: string): string[] {
     `--volume=${DEFAULT_VOLUME}`,
     `--input-ipc-server=${ipcPath}`,
 
-    // 🔒 Format "safe" = ton ancien comportement qui marchait
+    // 🔒 Tes réglages qui marchent (NE PAS TOUCHER)
     "--ytdl-format=bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "--ytdl=yes",
+
+    // ✨ LES SEULS AJOUTS POUR LA QUALITÉ (Xbox)
+    "--ao=wasapi",               // Utilise le moteur audio natif Xbox/Windows
+    "--audio-pitch-correction=yes", // Évite les distorsions si le flux varie
+    "--gapless-audio=yes",        // Transitions fluides
+    "--cache=yes",                  // Activer le cache pour éviter les micro-coupures
+    "--demuxer-max-bytes=128MiB",   // Buffer de 128Mo
+    "--demuxer-readahead-secs=30",  // Lire 30s en avance
   ];
 
-  // ========== Device audio (comme tu avais déjà) ==========
+  // ========== Device audio (inchangé) ==========
   const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
   if (audioDevice) {
     args.push(`--audio-device=${audioDevice}`);
-    console.log("[mpv] audio-device =", audioDevice);
   }
 
-  // ========== Buffer audio ==========
+  // ========== Buffer audio (inchangé) ==========
   const bufEnv = (process.env.MPV_AUDIO_BUFFER_SECS || "").trim();
   const bufVal = bufEnv ? Number(bufEnv) : 2;
   if (Number.isFinite(bufVal) && bufVal >= 0 && bufVal <= 10) {
     args.push(`--audio-buffer=${bufVal}`);
   }
 
-  // ========== Qualité de sortie (local, ne touche pas YouTube) ==========
-  // Par défaut : 48 kHz stéréo (standard HDMI / consoles)
+  // ========== Qualité de sortie (inchangé) ==========
   const samplerate = (process.env.MPV_AUDIO_SAMPLERATE || "48000").trim();
   if (/^\d+$/.test(samplerate)) {
     args.push(`--audio-samplerate=${samplerate}`);
@@ -83,41 +91,37 @@ function buildAudioArgs(ipcPath: string): string[] {
     args.push(`--audio-channels=${channels}`);
   }
 
-  // Driver de sortie (sur Windows: wasapi recommandé, sinon laisse vide)
   const ao = (process.env.MPV_AO || "").trim();
   if (ao) {
     args.push(`--ao=${ao}`);
   }
 
-  // ========== DRC / normalisation optionnelle ==========
-  // MPV_ENABLE_DRC=1 -> petit compresseur/normaliseur pour un son plus constant
+  // ========== DRC / normalisation (inchangé) ==========
   const enableDRC = (process.env.MPV_ENABLE_DRC || "").trim() === "1";
   if (enableDRC) {
-    // Filtre "soft" pour lisser les volumes sans être trop agressif
+    // Ton filtre dynaudnorm d'origine
     args.push("--af-add=lavfi=[dynaudnorm=g=5:f=250:r=0.9:p=0.5]");
   }
 
-  // Normalisation du downmix surround -> stéréo (facultatif)
   const normalizeDownmix = (process.env.MPV_AUDIO_NORMALIZE_DOWNMIX || "").trim();
   if (normalizeDownmix === "yes" || normalizeDownmix === "no") {
     args.push(`--audio-normalize-downmix=${normalizeDownmix}`);
   }
 
-  // ========== YTDL raw options (comme ton ancien code) ==========
+  // ========== YTDL raw options (RETOUR À TON ORIGINAL) ==========
   const rawOpts: string[] = [];
   rawOpts.push("force-ipv4=");
-  rawOpts.push("extractor-args=youtube:player_client=android");
+  rawOpts.push("extractor-args=youtube:player_client=android"); // Ton réglage stable
   if (rawOpts.length > 0) {
     args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);
   }
 
-  // ========== Options additionnelles (env) ==========
+  // ========== Options additionnelles (inchangé) ==========
   const extra = splitArgs(process.env.MPV_ADDITIONAL_OPTS || "");
   args.push(...extra);
 
   return args;
 }
-
 
 
 async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Socket> {

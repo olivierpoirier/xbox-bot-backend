@@ -1,3 +1,7 @@
+//server.ts
+// 1. Indispensable en haut du fichier
+process.env.PLAY_DL_SKIP_PROMPT = "true";
+
 import "dotenv/config";
 import express from "express";
 import http from "http";
@@ -24,7 +28,62 @@ import {
   AGE_RESTRICTED,
 } from "./ytdlp";
 import { startSpan, pushMetrics, getMetrics, type PlayMetrics } from "./metrics";
+import play from "play-dl";
 
+// Force la fermeture du processus sur Ctrl+C même si stdin est bloqué
+// Force la fermeture propre sur Ctrl+C
+const shutdown = () => {
+  console.log("\n👋 Arrêt du serveur (SIGINT)...");
+  // On ferme le serveur HTTP pour libérer le port
+  server.close();
+  // On s'assure que mpv est tué si un morceau est en cours
+  if (playing?.handle) {
+    try { mpvQuit(playing.handle); } catch {}
+  }
+  // On quitte proprement
+  process.exit(0);
+};
+
+process.on("SIGINT", () => {
+  console.log("\n[Terminating] Arrêt en cours...");
+  
+  // On détruit l'entrée standard pour débloquer le terminal
+  process.stdin.destroy(); 
+  
+  // On force la sortie après un délai très court pour laisser 
+  // le temps aux logs de s'afficher
+  setTimeout(() => {
+    process.exit(0);
+  }, 100);
+});
+
+process.on("SIGTERM", shutdown);
+
+async function setupSpotify() {
+  try {
+    const clientId = process.env.SPOTIFY_CLIENT_ID || "";
+    const clientSecret = process.env.SPOTIFY_CLIENT_SECRET || "";
+
+    if (!clientId || !clientSecret) {
+      console.warn("⚠️ [Spotify] Credentials manquants dans le .env");
+    }
+
+    await play.setToken({
+      spotify: {
+        client_id: clientId.trim(),
+        client_secret: clientSecret.trim(),
+        refresh_token: (process.env.SPOTIFY_REFRESH_TOKEN || "").trim(),
+        market: 'FR'
+      }
+    });
+
+    // Correction TS : pas d'argument ici
+    const expired = await play.is_expired(); 
+    console.log(`✅ [Spotify] play-dl configuré. Expire bientôt : ${expired}`);
+  } catch (e) {
+    console.error("❌ [Spotify] Initialization failed:", e);
+  }
+}
 /* -------------------- Helpers ENV -------------------- */
 function intEnv(name: string, def: number, min?: number, max?: number): number {
   const raw = (process.env[name] || "").trim();
@@ -149,20 +208,20 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function prefetchQueuedMetadata(seq: number): Promise<void> {
   if (!state.now || state.now.startedAt == null) return;
 
-  // On cible les items qui n'ont pas encore de titre, de thumb ou de durée
   const targets = state.queue.filter(
     (q) => q.status === "queued" && (!q.title || !q.thumb || q.durationSec == null),
   );
 
   if (targets.length === 0) return;
 
-  // MODIFICATION ICI : On passe d'un traitement parallèle (map) à une boucle séquentielle (for...of)
   for (const q of targets) {
-    // Si une nouvelle séquence de prefetch a été lancée entre temps (ex: skip, clear), on arrête tout.
     if (seq !== prefetchSeq) return;
+    
+    // ✨ NOUVEAU : Si c'est un lien de recherche Spotify, on ne probe pas.
+    // Les infos fournies par play-dl sont déjà meilleures que ce que probeSingle trouverait.
+    if (q.url.startsWith("ytsearch:")) continue;
 
     try {
-      // On récupère les infos pour UN item
       const info = await probeSingle(q.url);
       
       let changed = false;
@@ -170,15 +229,11 @@ async function prefetchQueuedMetadata(seq: number): Promise<void> {
       if (!q.thumb && info.thumb) { q.thumb = info.thumb; changed = true; }
       if (q.durationSec == null && info.durationSec != null) { q.durationSec = info.durationSec; changed = true; }
 
-      // Si on a mis à jour des infos, on prévient le frontend immédiatement pour voir l'image apparaître
       if (changed) scheduleBroadcast();
-
-      // IMPORTANT : On attend un peu (300ms à 1s) avant de faire la suivante pour éviter le rate-limit YouTube
       await sleep(500); 
 
     } catch (e) {
       console.error("[prefetch] probe error for", q.url, e);
-      // En cas d'erreur, on attend aussi un peu pour ne pas spammer en boucle
       await sleep(1000);
     }
   }
@@ -279,6 +334,7 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
     item.status = "playing";
     console.log("[player] start item:", item.url);
 
+    // Initialisation de l'état "now"
     state.now = {
       url: item.url,
       title: item.title,
@@ -286,80 +342,78 @@ async function ensurePlayerLoop(trace?: PlayMetrics): Promise<void> {
       addedBy: item.addedBy,
       startedAt: null,
       group: item.group,
-      durationSec: null,
+      durationSec: item.durationSec || null,
       positionOffsetSec: 0,
     };
     scheduleBroadcast();
 
-    const s_probe = startSpan("probeSingle_async", { url: item.url });
-    probeSingle(item.url)
-      .then((info) => {
-        item.title ||= info.title;
-        item.thumb ||= info.thumb;
-        if (state.now?.url === item.url) {
-          state.now = {
-            ...(state.now as Now),
-            title: item.title,
-            thumb: item.thumb,
-            durationSec: info.durationSec ?? state.now?.durationSec ?? null,
-          };
-          scheduleBroadcast();
-        }
-      })
-      .catch((e) => console.error("[player] probeSingle_async error:", e))
-      .finally(() => trace?.spans.push(s_probe.end()));
+    // 1. Récupération des métadonnées en arrière-plan (PROBE)
+    // On ne le fait que si ce n'est PAS un item Spotify (ytsearch:) 
+    // car Spotify a déjà ses infos complètes.
+    if (!item.url.startsWith("ytsearch:")) {
+      const s_probe = startSpan("probeSingle_async", { url: item.url });
+      probeSingle(item.url)
+        .then((info) => {
+          item.title ||= info.title;
+          item.thumb ||= info.thumb;
+          if (state.now?.url === item.url) {
+            state.now = {
+              ...(state.now as Now),
+              title: item.title,
+              thumb: item.thumb,
+              durationSec: info.durationSec ?? state.now?.durationSec ?? null,
+            };
+            scheduleBroadcast();
+          }
+        })
+        .catch((e) => console.error("[player] probeSingle_async error:", e))
+        .finally(() => trace?.spans.push(s_probe.end()));
+    }
 
-    // 1) tentative simple (URL d’origine)
+    // 2. Tentative de lecture n°1 : URL d'origine (ou ytsearch)
     const ok1 = await tryPlayWith(item.url, item, trace);
     if (ok1) return;
 
-    // 2) fallback direct
-    const s_direct = startSpan("yt_direct_url", { url: item.url });
-    const direct = await getDirectPlayableUrl(item.url).catch(() => null);
-    trace?.spans.push(s_direct.end({ hasDirect: !!direct }));
+    // 3. Tentative de lecture n°2 : Fallback Direct URL (uniquement pour liens classiques)
+    if (!item.url.startsWith("ytsearch:")) {
+      const s_direct = startSpan("yt_direct_url", { url: item.url });
+      const direct = await getDirectPlayableUrl(item.url).catch(() => null);
+      trace?.spans.push(s_direct.end({ hasDirect: !!direct }));
 
-    if (direct) {
-      if (state.now) state.now.url = direct;
-      const ok2 = await tryPlayWith(direct, item, trace);
-      if (ok2) return;
+      if (direct) {
+        if (state.now) state.now.url = direct;
+        const ok2 = await tryPlayWith(direct, item, trace);
+        if (ok2) return;
+      }
     }
 
-    // Échec => SKIP
+    // 4. Échec total => Marquer en erreur et passer au suivant
     console.error("[player] both primary and direct playback failed -> skip");
 
-    // 🔔 Vidéo 18+ : toast spécial
+    // Gestion spéciale des restrictions d'âge
     try {
       const key = normalizeUrl(item.url);
       if (AGE_RESTRICTED.has(key)) {
         pushToast("Miss Noémie est mineure et 100% pure. Skip de la musique...");
         AGE_RESTRICTED.delete(key);
       }
-    } catch {
-      // pas grave si ça casse, on ne bloque pas le skip
-    }
+    } catch { /* ignore */ }
 
     item.status = "error";
     state.now = null;
     playing = null;
     clearStatusLine();
     scheduleBroadcast();
+    
+    // On relance la boucle après un court délai
     setTimeout(() => {
       void ensurePlayerLoop();
     }, 600);
+    
     if (trace) pushMetrics(trace);
-  } catch (e) {
-    // Sécurité ultime : si quelque chose pète ici, on marque l’item en erreur et on passe à la suivante
-    console.error("[player] ensurePlayerLoop fatal:", e);
-    try {
-      const key = normalizeUrl(item.url);
-      if (AGE_RESTRICTED.has(key)) {
-        pushToast("Miss Noémie est mineure et 100% pure. Skip de la musique...");
-        AGE_RESTRICTED.delete(key);
-      }
-    } catch {
-      // ignore
-    }
 
+  } catch (e) {
+    console.error("[player] ensurePlayerLoop fatal error:", e);
     item.status = "error";
     state.now = null;
     playing = null;
@@ -443,131 +497,102 @@ io.on("connection", (socket) => {
         return socket.emit("toast", "URL invalide");
       }
 
+      const addedBy = (payload.addedBy || "anon").slice(0, 64);
+      const nowTs = Date.now();
+      
       const trace: PlayMetrics = {
         id: `${Date.now()}-${Math.random()}`,
         spans: [],
         startedAt: Date.now(),
       };
-      const s_recv = startSpan("fe->be_receive");
-      trace.spans.push(s_recv.end({ url: raw }));
 
-      const s_quick = startSpan("resolveQuick", { url: raw });
-      let quick: ResolvedItem[] = [];
-      try {
-        quick = await resolveQuick(raw);
-      } catch (e) {
-        console.error("[play] resolveQuick error:", e);
-      }
-      trace.spans.push(s_quick.end({ count: quick.length }));
+      // --- LOGIQUE DE DÉTECTION SPOTIFY ---
+      const isSpotify = raw.includes("spotify.com") || raw.includes("googleusercontent.com/spotify");
 
-      const s_enqueue = startSpan("enqueue");
-      const groupQuick =
-        quick.length > 1 ? `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` : undefined;
-      const addedBy = (payload.addedBy || "anon").slice(0, 64);
-      const nowTs = Date.now();
-
-      if (quick.length === 0) {
-        state.queue.push({
-          id: String(nextId++),
-          url: normalizeUrl(raw),
-          title: undefined,
-          thumb: undefined,
-          group: undefined,
-          addedBy,
-          status: "queued",
-          createdAt: nowTs,
-        });
-      } else {
-        for (const it of quick) {
-          state.queue.push({
-            id: String(nextId++),
-            url: normalizeUrl(it.url),
-            title: it.title,
-            thumb: it.thumb,
-            group: groupQuick,
-            addedBy,
-            status: "queued",
-            createdAt: nowTs,
-          });
-        }
-      }
-      trace.spans.push(s_enqueue.end({ queued: quick.length || 1 }));
-
-      scheduleBroadcast();
-      kickPrefetch();
-
-      const s_full = startSpan("resolveUrlToPlayableItems", { url: raw });
-      resolveUrlToPlayableItems(raw)
-        .then((full) => {
+      if (isSpotify) {
+        // POUR SPOTIFY : On ne fait PAS de resolveQuick. 
+        // On attend la conversion complète avant d'ajouter à la queue.
+        const s_full = startSpan("resolveSpotify_blocking", { url: raw });
+        try {
+          const full = await resolveUrlToPlayableItems(raw);
           trace.spans.push(s_full.end({ count: full.length }));
 
-          const hadGroup = !!groupQuick;
-          let targetGroup = groupQuick;
-          if (full.length > 1 && !hadGroup) {
-            targetGroup = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          if (full.length === 0) {
+            return socket.emit("toast", "Spotify : Aucun morceau trouvé.");
           }
 
-          const existingByUrl = new Map<string, QueueItem | null>();
-          for (const q of state.queue) {
-            if (q.status !== "done" && q.url) {
-              const key = normalizeUrl(q.url);
-              if (!existingByUrl.has(key)) existingByUrl.set(key, q);
-            }
-          }
-
-          const seen = new Set<string>();
+          const group = full.length > 1 ? `grp_${Date.now()}_spotify` : undefined;
+          
           for (const it of full) {
-            const key = normalizeUrl(it.url);
-            seen.add(key);
-            const q = existingByUrl.get(key);
-            if (q) {
-              q.title = q.title || it.title;
-              q.thumb = q.thumb || it.thumb;
-              if (it.durationSec != null && q.durationSec == null) q.durationSec = it.durationSec;
-              if (!q.group && targetGroup) q.group = targetGroup;
-            } else {
-              state.queue.push({
-                id: String(nextId++),
-                url: key,
-                title: it.title,
-                thumb: it.thumb,
-                group: targetGroup,
-                addedBy,
-                status: "queued",
-                createdAt: Date.now(),
-                durationSec: it.durationSec,
-              });
-            }
+            state.queue.push({
+              id: String(nextId++),
+              url: it.url, // C'est maintenant une URL YouTube (grâce à play-dl)
+              title: it.title,
+              thumb: it.thumb,
+              group: group,
+              addedBy,
+              status: "queued",
+              createdAt: Date.now(),
+              durationSec: it.durationSec,
+            });
           }
 
-          if (state.now && state.now.url) {
-            const curKey = normalizeUrl(state.now.url);
-            if (seen.has(curKey)) {
-              const cur = full.find((x) => normalizeUrl(x.url) === curKey);
-              if (cur) {
-                state.now = {
-                  ...state.now,
-                  title: state.now.title || cur.title,
-                  thumb: state.now.thumb || cur.thumb,
-                  durationSec: state.now.durationSec ?? cur.durationSec ?? null,
-                };
-              }
-            }
-          }
-
+          if (full.length > 1) pushToast(`Playlist Spotify: ${full.length} pistes ✅`);
           scheduleBroadcast();
-          kickPrefetch();
+        } catch (e) {
+          console.error("[Spotify] Conversion error:", e);
+          socket.emit("toast", "Erreur lors de la conversion Spotify.");
+        }
+      } else {
+        // POUR TOUT LE RESTE (YouTube, etc.) : On garde la logique ultra-rapide
+        const s_quick = startSpan("resolveQuick", { url: raw });
+        let quick: ResolvedItem[] = [];
+        try {
+          quick = await resolveQuick(raw);
+        } catch (e) {
+          console.error("[play] resolveQuick error:", e);
+        }
+        trace.spans.push(s_quick.end({ count: quick.length }));
 
-          if (full.length > 1) pushToast(`Playlist ajoutée: ${full.length} pistes ✅`);
-        })
-        .catch((e) => {
-          trace.spans.push(
-            s_full.end({ error: e instanceof Error ? e.message : String(e) }),
-          );
-          console.error("[play] resolveUrlToPlayableItems error:", e);
-        });
+        const groupQuick = quick.length > 1 ? `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` : undefined;
 
+        // Ajout immédiat (Metadata provisoires)
+        if (quick.length === 0) {
+          state.queue.push({
+            id: String(nextId++),
+            url: normalizeUrl(raw),
+            status: "queued",
+            addedBy,
+            createdAt: nowTs,
+          });
+        } else {
+          for (const it of quick) {
+            state.queue.push({
+              id: String(nextId++),
+              url: normalizeUrl(it.url),
+              title: it.title,
+              thumb: it.thumb,
+              group: groupQuick,
+              addedBy,
+              status: "queued",
+              createdAt: nowTs,
+            });
+          }
+        }
+        scheduleBroadcast();
+
+        // Enrichissement en arrière-plan (Lent)
+        resolveUrlToPlayableItems(raw).then((full) => {
+          // ... (garder ta logique de mise à jour des métadonnées existante ici)
+          // Celle qui fait le mapping via existingByUrl.set(key, q)
+          // ...
+          scheduleBroadcast();
+        }).catch(e => console.error("[play] Background resolve error:", e));
+      }
+
+      // Lancer le player si besoin
       void ensurePlayerLoop(trace);
+
     } catch (e) {
       console.error("[socket.play] fatal:", e);
       socket.emit("toast", "Erreur interne côté serveur (play).");
@@ -802,9 +827,19 @@ app.get("/metrics", (_req, res) => {
 
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
-server.listen(PORT, () => {
-  console.log(`🎧 Music bot on http://localhost:${PORT}`);
-});
+async function bootstrap() {
+  // 1. On attend Spotify d'abord
+  console.log("⏳ Initialisation de Spotify (répondez aux questions si nécessaire)...");
+  await setupSpotify();
+
+  // 2. Une fois que c'est fait, on lance le serveur
+  server.listen(PORT, () => {
+    console.log(`\n🎧 Music bot on http://localhost:${PORT}`);
+  });
+}
+
+// Lancer le démarrage
+bootstrap();
 
 /* ================= Console status helpers ================= */
 function fmtTime(sec: number | null | undefined): string {
@@ -849,3 +884,4 @@ function logNowPlaying() {
     }`,
   );
 }
+

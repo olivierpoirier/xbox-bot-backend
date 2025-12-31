@@ -45,106 +45,82 @@ function splitArgs(str: string): string[] {
   return m.map((s) => (s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s));
 }
 
+// Dans mpv.ts
+
 function buildAudioArgs(ipcPath: string): string[] {
+
   const args: string[] = [
-    "--no-video",
+
+    "--video=no",
     "--input-terminal=no",
     "--term-osd=no",
     "--load-scripts=no",
-    `--volume=${DEFAULT_VOLUME}`,
+    `--volume=100`,                
     `--input-ipc-server=${ipcPath}`,
-
-    // 🔒 Tes réglages qui marchent (NE PAS TOUCHER)
+    // 🔒 YouTube
     "--ytdl-format=bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
     "--ytdl=yes",
-
-    // ✨ LES SEULS AJOUTS POUR LA QUALITÉ (Xbox)
-    "--ao=wasapi",               // Utilise le moteur audio natif Xbox/Windows
-    "--audio-pitch-correction=yes", // Évite les distorsions si le flux varie
-    "--gapless-audio=yes",        // Transitions fluides
-    "--cache=yes",                  // Activer le cache pour éviter les micro-coupures
-    "--demuxer-max-bytes=128MiB",   // Buffer de 128Mo
-    "--demuxer-readahead-secs=30",  // Lire 30s en avance
+    // ✨ QUALITÉ XBOX & STABILITÉ
+    "--ao=wasapi",
+    "--audio-channels=stereo",       // Force la stéréo (Vital pour que la voix reste au centre)
+    "--audio-samplerate=48000",
+    "--audio-format=s16",
+    // 🔊 LA SOLUTION MAGIQUE : LOUDNORM
+    // I=-16 : Volume cible standard TV (assez fort mais pas saturé)
+    // LRA=11 : Laisse un peu de vie à la musique, mais empêche la voix de se cacher
+    // TP=-1.5 : Empêche le "clipping" (les grésillements)
+    "--af=loudnorm=I=-16:TP=-1.5:LRA=11",
+    // 🩹 ANTI-COUPURE (Toujours nécessaire pour la Xbox)
+    "--audio-stream-silence=yes",
+    "--audio-wait-open=0.1",
+    // 🛡️ Buffer Hybride
+    "--cache=yes",
+    "--demuxer-max-bytes=128MiB",
+    "--audio-buffer=3",              // 3 secondes pour absorber les chocs sans retarder
   ];
 
-  // ========== Device audio (inchangé) ==========
   const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
   if (audioDevice) {
     args.push(`--audio-device=${audioDevice}`);
   }
 
-  // ========== Buffer audio (inchangé) ==========
-  const bufEnv = (process.env.MPV_AUDIO_BUFFER_SECS || "").trim();
-  const bufVal = bufEnv ? Number(bufEnv) : 2;
-  if (Number.isFinite(bufVal) && bufVal >= 0 && bufVal <= 10) {
-    args.push(`--audio-buffer=${bufVal}`);
-  }
-
-  // ========== Qualité de sortie (inchangé) ==========
-  const samplerate = (process.env.MPV_AUDIO_SAMPLERATE || "48000").trim();
-  if (/^\d+$/.test(samplerate)) {
-    args.push(`--audio-samplerate=${samplerate}`);
-  }
-
-  const channels = (process.env.MPV_AUDIO_CHANNELS || "stereo").trim();
-  if (channels) {
-    args.push(`--audio-channels=${channels}`);
-  }
-
-  const ao = (process.env.MPV_AO || "").trim();
-  if (ao) {
-    args.push(`--ao=${ao}`);
-  }
-
-  // ========== DRC / normalisation (inchangé) ==========
-  const enableDRC = (process.env.MPV_ENABLE_DRC || "").trim() === "1";
-  if (enableDRC) {
-    // Ton filtre dynaudnorm d'origine
-    args.push("--af-add=lavfi=[dynaudnorm=g=5:f=250:r=0.9:p=0.5]");
-  }
-
-  const normalizeDownmix = (process.env.MPV_AUDIO_NORMALIZE_DOWNMIX || "").trim();
-  if (normalizeDownmix === "yes" || normalizeDownmix === "no") {
-    args.push(`--audio-normalize-downmix=${normalizeDownmix}`);
-  }
-
-  // ========== YTDL raw options (RETOUR À TON ORIGINAL) ==========
-  const rawOpts: string[] = [];
-  rawOpts.push("force-ipv4=");
-  rawOpts.push("extractor-args=youtube:player_client=android"); // Ton réglage stable
-  if (rawOpts.length > 0) {
-    args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);
-  }
-
-  // ========== Options additionnelles (inchangé) ==========
-  const extra = splitArgs(process.env.MPV_ADDITIONAL_OPTS || "");
-  args.push(...extra);
+  const rawOpts: string[] = [
+    "force-ipv4=",
+    "extractor-args=youtube:player_client=android",
+    "no-check-certificate="
+  ];
+  args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);
 
   return args;
 }
 
 
-async function connectIpc(pipePath: string, timeoutMs = 20000): Promise<net.Socket> {
+async function connectIpc(pipePath: string, proc: ChildProcess, timeoutMs = 5000): Promise<net.Socket> {
   const start = Date.now();
-  let delay = 10;
-  let lastErr: unknown;
+  let delay = 20;
 
   while (Date.now() - start < timeoutMs) {
+    // Si le processus mpv est déjà mort, on arrête d'essayer de se connecter
+    if (proc.exitCode !== null) {
+      throw new Error(`MPV est mort prématurément (exit code: ${proc.exitCode})`);
+    }
+
     try {
       const sock = net.connect(pipePath as any);
       await new Promise<void>((res, rej) => {
-        sock.once("connect", () => res());
+        sock.once("connect", () => {
+          sock.removeAllListeners("error");
+          res();
+        });
         sock.once("error", rej);
       });
       return sock;
     } catch (e) {
-      lastErr = e;
       await wait(delay);
-      delay = Math.min(Math.floor(delay * 1.5), 100);
+      delay = Math.min(delay * 1.5, 200);
     }
   }
-  console.error("[mpv] IPC timeout", lastErr);
-  throw new Error("IPC mpv timeout", { cause: lastErr as any });
+  throw new Error("IPC mpv timeout");
 }
 
 function lineReader(sock: net.Socket, onLine: (l: string) => void) {
@@ -164,51 +140,62 @@ function lineReader(sock: net.Socket, onLine: (l: string) => void) {
 
 export async function startMpv(url: string): Promise<MpvHandle> {
   const bin = findPlayerBinary();
-  const id = crypto.randomBytes(6).toString("hex");
-  const ipcPath =
-    process.platform === "win32"
-      ? `\\\\.\\pipe\\xmb_mpv_${Date.now()}_${id}`
-      : `/tmp/xmb_mpv_${Date.now()}_${id}.sock`;
+  
+  // Utilisation d'un ID court pour le Pipe Windows (plus robuste)
+  const id = crypto.randomBytes(4).toString("hex");
+  const ipcPath = process.platform === "win32"
+    ? `\\\\.\\pipe\\xmb_ipc_${id}`
+    : `/tmp/xmb_mpv_${id}.sock`;
 
+  // Nettoyage préventif du socket si non-windows
   try {
-    if (process.platform !== "win32") fs.unlinkSync(ipcPath);
+    if (process.platform !== "win32" && fs.existsSync(ipcPath)) fs.unlinkSync(ipcPath);
   } catch {}
 
   const args = [...buildAudioArgs(ipcPath), url];
 
-  console.log("[mpv] spawn", bin, args.join(" "));
-  const stdioMode: ("ignore" | "inherit")[] = ["ignore", "inherit", "inherit"];
-
+  // Log de démarrage propre
+  console.log(`[mpv] 🎵 Démarrage lecture : ${url.substring(0, 60)}...`);
+  
+  // "ignore" sur stdout/stderr pour éviter la pollution console et les blocages de buffer
+  const stdioMode: ("ignore" | "inherit")[] = ["ignore", "ignore", "ignore"];
   const proc = spawn(bin, args, { stdio: stdioMode });
-  proc.on("error", (e) => console.error("[mpv] proc error:", e));
-  proc.on("exit", (code, sig) => console.log("[mpv] proc exit", { code, sig }));
 
-  const sock = await connectIpc(ipcPath);
-  sock.on("error", (e) => console.error("[mpv] socket error:", e));
+  // --- GESTION DES ÉVÉNEMENTS PROCESSUS ---
+  proc.on("error", (e) => console.error("[mpv] Erreur fatale au spawn :", e));
+  
+  // On ne log le "exit" ici que s'il est anormal au démarrage
+  proc.on("exit", (code, sig) => {
+    if (code !== 0 && code !== null) {
+      console.error(`[mpv] ❌ Le processus s'est arrêté brutalement (Code: ${code}). Vérifiez votre périphérique audio.`);
+    }
+  });
+
+  // --- CONNEXION IPC ---
+  // On passe 'proc' à connectIpc pour détecter le crash immédiatement (Code 2)
+  const sock = await connectIpc(ipcPath, proc);
 
   const listeners: Array<(ev: MpvEvent) => void> = [];
   const on = (fn: (ev: MpvEvent) => void) => listeners.push(fn);
+  
   const emit = (ev: MpvEvent) => {
     for (const fn of listeners) {
-      try {
-        fn(ev);
-      } catch (e) {
-        console.error("[mpv] listener error", e);
-      }
+      try { fn(ev); } catch (e) { console.error("[mpv] listener error", e); }
     }
   };
 
   const send = (cmd: unknown) =>
     new Promise<void>((resolve) => {
-      if (!sock || (sock as any).writableEnded || sock.destroyed) return resolve();
+      if (!sock || sock.destroyed || !sock.writable) return resolve();
       const payload = JSON.stringify(cmd) + "\n";
       try {
         sock.write(payload, () => resolve());
       } catch {
-        return resolve();
+        resolve();
       }
     });
 
+  // --- CONFIGURATION INITIALE VIA IPC ---
   await send({ command: ["observe_property", 1, "duration"] });
   await send({ command: ["observe_property", 2, "idle-active"] });
   await send({ command: ["observe_property", 3, "time-pos"] });
@@ -217,11 +204,7 @@ export async function startMpv(url: string): Promise<MpvHandle> {
   let startReject: ((e: any) => void) | null = null;
   let startResolve: (() => void) | null = null;
 
-  const startedPromise = new Promise<void>((res, rej) => {
-    startResolve = res;
-    startReject = rej;
-  });
-
+  // --- LECTURE DES DONNÉES IPC ---
   lineReader(sock, (line) => {
     try {
       const obj = JSON.parse(line);
@@ -229,6 +212,7 @@ export async function startMpv(url: string): Promise<MpvHandle> {
       if (obj?.event === "file-loaded") {
         emit({ type: "file-loaded" });
       }
+      
       if (obj?.event === "playback-restart") {
         if (!started) {
           started = true;
@@ -236,40 +220,33 @@ export async function startMpv(url: string): Promise<MpvHandle> {
         }
         emit({ type: "playback-restart" });
       }
+      
       if (obj?.event === "property-change" && typeof obj.name === "string") {
         emit({ type: "property-change", name: obj.name, data: obj.data });
-        if (obj.name === "time-pos" && !started && typeof obj.data === "number") {
+        
+        // On considère que ça a démarré dès qu'on a une position ou une durée
+        if ((obj.name === "time-pos" || obj.name === "duration") && !started && typeof obj.data === "number") {
           started = true;
           startResolve?.();
         }
+
+        // Si mpv devient idle alors qu'on vient de lancer, c'est un échec de lecture
         if (obj.name === "idle-active" && obj.data === true && !started) {
-          console.error("[mpv] idle-active before start (unavailable media?)");
           startReject?.(new Error("idle-before-start"));
         }
       }
     } catch {
-      // ignore
+      // JSON invalide ou partiel, on ignore
     }
   });
 
+  // --- FONCTION DE NETTOYAGE ---
   const kill = () => {
-    try {
-      sock.destroy();
-    } catch {}
-    try {
-      proc.kill("SIGKILL");
-    } catch {}
+    try { sock.destroy(); } catch {}
+    try { proc.kill("SIGKILL"); } catch {}
   };
-  proc.once("exit", () => {
-    try {
-      sock.destroy();
-    } catch {}
-  });
-  proc.once("error", () => {
-    try {
-      sock.destroy();
-    } catch {}
-  });
+
+  proc.once("exit", () => { try { sock.destroy(); } catch {} });
 
   return {
     proc,
@@ -277,9 +254,11 @@ export async function startMpv(url: string): Promise<MpvHandle> {
     send,
     kill,
     on,
-    waitForPlaybackStart: (timeoutMs: number = 15000) => {
+    // Cette fonction est cruciale pour que le bot attende le chargement réel
+    waitForPlaybackStart: (timeoutMs: number = 20000) => {
       if (started) return Promise.resolve();
       let to: NodeJS.Timeout | null = null;
+      
       return new Promise<void>((resolve, reject) => {
         const doneOk = () => {
           if (to) clearTimeout(to);
@@ -289,11 +268,12 @@ export async function startMpv(url: string): Promise<MpvHandle> {
           if (to) clearTimeout(to);
           reject(e);
         };
+        
         startResolve = doneOk;
         startReject = doneKo;
+        
         to = setTimeout(() => {
-          console.error("[mpv] start timeout after", timeoutMs, "ms");
-          doneKo(new Error("start-timeout"));
+          doneKo(new Error(`Timeout de chargement (${timeoutMs}ms)`));
         }, timeoutMs);
       });
     },

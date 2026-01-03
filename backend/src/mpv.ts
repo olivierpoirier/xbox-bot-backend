@@ -48,35 +48,35 @@ function splitArgs(str: string): string[] {
 // Dans mpv.ts
 
 function buildAudioArgs(ipcPath: string): string[] {
-
   const args: string[] = [
-
     "--video=no",
     "--input-terminal=no",
     "--term-osd=no",
     "--load-scripts=no",
-    `--volume=100`,                
+    
+    // 🔉 On descend légèrement le volume de base pour laisser de la place au traitement
+    `--volume=80`,                
     `--input-ipc-server=${ipcPath}`,
-    // 🔒 YouTube
-    "--ytdl-format=bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+
+    // 🔒 Formats haute qualité
+    "--ytdl-format=bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best",
     "--ytdl=yes",
-    // ✨ QUALITÉ XBOX & STABILITÉ
+
+    // ✨ Paramètres de sortie
     "--ao=wasapi",
-    "--audio-channels=stereo",       // Force la stéréo (Vital pour que la voix reste au centre)
+    "--audio-channels=stereo",
     "--audio-samplerate=48000",
-    "--audio-format=s16",
-    // 🔊 LA SOLUTION MAGIQUE : LOUDNORM
-    // I=-16 : Volume cible standard TV (assez fort mais pas saturé)
-    // LRA=11 : Laisse un peu de vie à la musique, mais empêche la voix de se cacher
-    // TP=-1.5 : Empêche le "clipping" (les grésillements)
-    "--af=loudnorm=I=-16:TP=-1.5:LRA=11",
-    // 🩹 ANTI-COUPURE (Toujours nécessaire pour la Xbox)
+
+    // 🔊 CHAINE DE FILTRES ANTI-SATURATION :
+    // 1. dynaudnorm : Équilibre le son pour qu'il soit constant.
+    // 2. extrastereo : (Optionnel) Ajoute un peu de largeur si le son fait "étouffé".
+    // 3. alimiter : Empêche mathématiquement le son de dépasser 0dB (le grésillement).
+    "--af=volume=0.8,dynaudnorm=f=250:g=7:p=0.90:s=30,alimiter=limit=0.85",    
     "--audio-stream-silence=yes",
     "--audio-wait-open=0.1",
-    // 🛡️ Buffer Hybride
     "--cache=yes",
     "--demuxer-max-bytes=128MiB",
-    "--audio-buffer=3",              // 3 secondes pour absorber les chocs sans retarder
+    "--audio-buffer=3",
   ];
 
   const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
@@ -86,7 +86,7 @@ function buildAudioArgs(ipcPath: string): string[] {
 
   const rawOpts: string[] = [
     "force-ipv4=",
-    "extractor-args=youtube:player_client=android",
+    "extractor-args=youtube:player_client=android", // Android a souvent des flux audio plus stables
     "no-check-certificate="
   ];
   args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);

@@ -168,8 +168,12 @@ io.on("connection", (socket) => {
 
         case "skip":
           if (currentPlaying?.handle) {
-            console.log("[command] Force Skip...");
-            currentPlaying.handle.kill(); // On utilise .kill() (SIGKILL) au lieu de mpvQuit
+            console.log("[command] Skip demandé...");
+            // On essaie d'abord de quitter proprement via IPC (arrête le moteur audio)
+            mpvQuit(currentPlaying.handle).catch(() => {
+                // Si ça échoue, on tue le processus
+                currentPlaying?.handle?.kill();
+            });
           }
           break;
 

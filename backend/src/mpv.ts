@@ -242,19 +242,32 @@ export async function startMpv(url: string): Promise<MpvHandle> {
 
   // --- FONCTION DE NETTOYAGE ---
   const kill = () => {
+    // 1. On ferme le socket IPC
     try { sock.destroy(); } catch {}
-    try { proc.kill("SIGKILL"); } catch {}
+
+    // 2. On tue le processus et ses enfants
+    if (proc.pid) {
+      if (process.platform === "win32") {
+        // Force (/f) l'arrêt de l'arbre de processus (/t)
+        // C'est la seule façon de tuer MPV + yt-dlp instantanément
+        spawn("taskkill", ["/pid", proc.pid.toString(), "/f", "/t"]);
+      } else {
+        proc.kill("SIGKILL");
+      }
+    }
   };
 
-  proc.once("exit", () => { try { sock.destroy(); } catch {} });
+  // Sécurité si le process meurt tout seul
+  proc.once("exit", () => { 
+    try { sock.destroy(); } catch {} 
+  });
 
   return {
     proc,
     sock,
     send,
-    kill,
+    kill, // On renvoie notre nouvelle fonction kill musclée
     on,
-    // Cette fonction est cruciale pour que le bot attende le chargement réel
     waitForPlaybackStart: (timeoutMs: number = 20000) => {
       if (started) return Promise.resolve();
       let to: NodeJS.Timeout | null = null;

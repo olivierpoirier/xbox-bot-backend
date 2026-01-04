@@ -7,90 +7,50 @@ interface Props {
 }
 
 export default function Toast({ message, clear, rainbow }: Props) {
-  const [visible, setVisible] = useState(true);
+  const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    setVisible(true);
-    const id = window.setTimeout(() => setVisible(false), 4000);
-    return () => window.clearTimeout(id);
-  }, [message]);
-
-  useEffect(() => {
-    if (!visible) {
-      const id = window.setTimeout(() => clear(), 300);
-      return () => window.clearTimeout(id);
+    if (message) {
+      setVisible(true);
+      const timer = setTimeout(() => {
+        setVisible(false);
+        // On attend la fin de l'animation CSS (300ms) pour supprimer le message
+        setTimeout(clear, 300);
+      }, 4000);
+      return () => clearTimeout(timer);
     }
-  }, [visible, clear]);
+  }, [message, clear]);
 
-  // Classes de base : On force le placement à droite avec right-4
+  if (!message) return null;
+
   const baseClasses = `
-    fixed top-24 right-4 z-[999]
-    max-w-sm px-6 py-3 rounded-xl
-    text-sm font-mono font-bold shadow-2xl transition-all duration-300
-    pointer-events-auto select-none
+    fixed top-24 right-4 z-[9999]
+    max-w-sm px-6 py-4 rounded-xl
+    text-sm font-mono font-bold shadow-2xl transition-all duration-500
+    pointer-events-auto select-none border-2
   `;
 
-  const visibleClasses = visible
-    ? "opacity-100 translate-y-0 scale-100"
-    : "opacity-0 -translate-y-4 scale-95";
+  const stateClasses = visible
+    ? "opacity-100 translate-x-0 scale-100"
+    : "opacity-0 translate-x-12 scale-90";
 
   const themeClasses = rainbow
-    ? "toast-rainbow"
-    : "bg-bg text-ink border-2 border-border shadow-neon-dynamic";
+    ? "bg-black text-white border-pink-500 shadow-[0_0_20px_rgba(236,72,153,0.4)]"
+    : "bg-bg text-ink border-border shadow-lg";
 
   return (
-    <>
-      <div className={`${baseClasses} ${visibleClasses} ${themeClasses}`}>
-        <span className="animate-glitch relative inline-block">
+    <div className={`${baseClasses} ${stateClasses} ${themeClasses}`}>
+      <div className="flex items-center gap-3">
+        <div className={`w-2 h-2 rounded-full animate-ping ${rainbow ? 'bg-pink-500' : 'bg-current'}`} />
+        <span className="uppercase tracking-tighter">
           {message}
         </span>
       </div>
-
-      <style>
-        {`
-          @keyframes glitch {
-            0% { clip-path: inset(0% 0% 0% 0%); transform: translate(0,0); }
-            20% { clip-path: inset(10% 0 85% 0); transform: translate(-2px,-2px); }
-            40% { clip-path: inset(85% 0 5% 0); transform: translate(2px,2px); }
-            60% { clip-path: inset(10% 0 85% 0); transform: translate(-1px,1px); }
-            80% { clip-path: inset(85% 0 5% 0); transform: translate(1px,-1px); }
-            100% { clip-path: inset(0% 0% 0% 0%); transform: translate(0,0); }
-          }
-
-          .animate-glitch {
-            animation: glitch 1.5s infinite;
-            text-shadow: 2px 0 10px currentColor;
-          }
-
-          .shadow-neon-dynamic {
-             box-shadow: 0 0 15px var(--border);
-          }
-
-          /* CORRECTION ICI : Pas de position relative/absolute qui casse le fixed right-4 */
-          .toast-rainbow {
-            background: #0f111a !important;
-            color: white !important;
-            border: none !important;
-            overflow: hidden; /* Pour que le pseudo-élément ne dépasse pas */
-          }
-
-          /* La bordure rainbow se fait via un pseudo-élément en absolute */
-          .toast-rainbow::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            padding: 2px; /* épaisseur de la bordure */
-            border-radius: inherit;
-            background: linear-gradient(90deg, #f472b6, #a78bfa, #06b6d4);
-            -webkit-mask:
-              linear-gradient(#fff 0 0) content-box,
-              linear-gradient(#fff 0 0);
-            -webkit-mask-composite: xor;
-            mask-composite: exclude;
-            pointer-events: none;
-          }
-        `}
-      </style>
-    </>
+      
+      {/* Barre de progression de vie du toast */}
+      <div className="absolute bottom-0 left-0 h-1 bg-current opacity-20 transition-all duration-[4000ms] ease-linear w-0" 
+           style={{ width: visible ? '100%' : '0%' }} 
+      />
+    </div>
   );
 }

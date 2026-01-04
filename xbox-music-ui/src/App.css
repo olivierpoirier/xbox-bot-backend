@@ -60,3 +60,34 @@
   to { transform: translateX(-100%); }
 }
 
+@keyframes hue-rotate {
+  from { filter: hue-rotate(0deg); }
+  to { filter: hue-rotate(360deg); }
+}
+
+.animate-hue {
+  animation: hue-rotate 5s linear infinite;
+}
+
+.border-rainbow {
+  border-image: linear-gradient(to right, #22d3ee, #a855f7, #ec4899) 1;
+  border-style: solid;
+}
+
+@keyframes rainbow-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(34, 211, 238, 0.4); }
+  50% { box-shadow: 0 0 40px rgba(236, 72, 153, 0.6); }
+}
+
+.animate-rainbow-glow {
+  animation: rainbow-glow 3s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin 12s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

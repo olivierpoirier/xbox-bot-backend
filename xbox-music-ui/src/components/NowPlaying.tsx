@@ -1,5 +1,5 @@
-// src/components/NowPlaying.tsx
-import { PauseCircle, Repeat } from "lucide-react";
+import { useState, useEffect } from "react";
+import { PauseCircle, Repeat, Loader2, Music, ExternalLink } from "lucide-react";
 import type { Now } from "../types";
 import SpectrumBars from "./SpectrumBars";
 
@@ -8,15 +8,10 @@ interface Props {
   paused: boolean;
   repeat: boolean;
   busy: string | null;
-  /** Couleur de départ du dégradé pour les barres */
   eqColorFrom?: string;
-  /** Couleur de fin du dégradé pour les barres */
   eqColorTo?: string;
-  /** Active l’animation arc-en-ciel (CSS) autour de la carte et du spectre */
   rainbow?: boolean;
-  /** Hauteur (px) du spectre sur mobile et desktop. Par défaut 64 */
   spectrumHeightPx?: number;
-  /** Nombre de barres à afficher */
   spectrumBars?: number;
 }
 
@@ -30,13 +25,6 @@ function formatTime(sec: number): string {
     : `${m}:${String(ss).padStart(2, "0")}`;
 }
 
-function currentPosSec(now: Now | null, paused: boolean): number {
-  if (!now) return 0;
-  const base = now.positionOffsetSec || 0;
-  if (paused || !now.startedAt) return base;
-  return base + (Date.now() - now.startedAt) / 1000;
-}
-
 export default function NowPlaying({
   now,
   paused,
@@ -48,118 +36,127 @@ export default function NowPlaying({
   spectrumHeightPx = 64,
   spectrumBars = 24,
 }: Props) {
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    if (paused || !now?.startedAt || now?.isBuffering) return;
+    const interval = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [paused, now?.startedAt, now?.isBuffering]);
+
+  const isLoading = Boolean(now?.url && now?.isBuffering);
   const isBusy = Boolean(busy);
 
+  const calculatePos = () => {
+    if (!now) return 0;
+    if (isLoading || paused || !now.startedAt) return now.positionOffsetSec || 0;
+    const elapsedSinceStart = (Date.now() - now.startedAt) / 1000;
+    return (now.positionOffsetSec || 0) + elapsedSinceStart;
+  };
+
   const hasDur = !!now?.durationSec && now.durationSec > 0;
-  const dur = hasDur ? Math.max(0, now!.durationSec!) : 0;
-
-  // Position courante (clampée entre 0 et dur)
-  const pos = hasDur
-    ? Math.min(dur, Math.max(0, currentPosSec(now, paused)))
-    : 0;
-
+  const dur = hasDur ? now!.durationSec! : 0;
+  const pos = hasDur ? Math.min(dur, Math.max(0, calculatePos())) : calculatePos();
   const remaining = hasDur ? Math.max(0, dur - pos) : 0;
 
   const cardCls = [
-    "bg-bg border border-transparent rounded-xl p-4 shadow-soft",
+    "bg-bg border border-transparent rounded-xl p-4 shadow-soft transition-all duration-500",
     rainbow ? "neon-glow rainbow-border animate-hue" : "neon-glow themed-border",
   ].join(" ");
 
-  const playingGlow = !paused
+  const playingGlow = (!paused && !isLoading && now?.url)
     ? "ring-2 ring-[var(--c1)]/40 shadow-lg shadow-[var(--c1)]/20 animate-pulse"
     : "";
 
-  // style commun pour forcer une hauteur non-nulle du conteneur du spectre
-  const spectrumStyle: React.CSSProperties = {
-    width: "100%",
-    height: `${spectrumHeightPx}px`,
-  };
-
   return (
     <section className={cardCls} aria-label="Lecture en cours">
-      <h2 className="text-lg font-semibold mb-2 text-center">Lecture en cours</h2>
+      <h2 className="text-lg font-bold mb-4 text-center uppercase tracking-widest opacity-70">
+        Lecture en cours
+      </h2>
 
       {now?.url ? (
-        <div className="p-3 rounded-xl bg-panel">
-          <div className="flex flex-col md:flex-row gap-4 items-center justify-center text-center md:text-left">
-            {now.thumb && (
-              <img
-                src={now.thumb}
-                alt={now.title || "cover"}
-                loading="lazy"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.src = "/fallback-cover.png";
-                }}
-                className={[
-                  "w-full max-w-[14rem] md:w-56 md:h-56 rounded-lg object-cover border border-slate-700",
-                  playingGlow,
-                ].join(" ")}
-              />
-            )}
-
+        <div className="p-3 rounded-xl bg-panel/50 backdrop-blur-sm">
+          <div className="flex flex-col md:flex-row gap-6 items-center justify-center text-center md:text-left">
+            
+            {/* Thumbnail */}
+            <div className="relative shrink-0">
+              {now.thumb ? (
+                <img
+                  src={now.thumb}
+                  alt={now.title || "cover"}
+                  className={`w-56 h-56 rounded-lg object-cover border border-slate-700 transition-all duration-700 ${playingGlow} ${isLoading ? "grayscale blur-sm scale-95" : "scale-100"}`}
+                />
+              ) : (
+                <div className="w-56 h-56 rounded-lg bg-black/20 flex items-center justify-center border border-white/5">
+                  <Music className="opacity-20 w-12 h-12" />
+                </div>
+              )}
+              {isLoading && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Loader2 className="w-12 h-12 text-white animate-spin" />
+                </div>
+              )}
+            </div>
 
             <div className="flex-1 min-w-0 flex flex-col items-center md:items-start justify-center">
-              <a
-                href={now.url}
-                target="_blank"
-                rel="noreferrer"
-                className="font-semibold break-words hover:underline text-center md:text-left"
-              >
-                {now.title || now.url}
-              </a>
-
-              {/* Temps courant / durée */}
-              <div
-                className="mt-1 text-sm font-medium"
-                style={{ color: "var(--c1)" }}
-                aria-live="polite"
-              >
-                {hasDur ? `${formatTime(pos)} / ${formatTime(dur)}` : "Durée inconnue"}
+              {/* Titre */}
+              <div className="text-xl font-black italic uppercase leading-tight line-clamp-2">
+                {isLoading ? "Initialisation du flux..." : (now.title || "Flux audio")}
               </div>
 
-              {/* Temps restant */}
-              {hasDur && (
-                <div className="mt-1 text-xs text-muted">
-                  Temps restant: {formatTime(remaining)}
+              {/* URL CLIQUABLE */}
+              <a 
+                href={now.url} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 mt-1 mb-3 text-[10px] font-mono opacity-40 hover:opacity-100 transition-opacity max-w-full group"
+              >
+                <span className="truncate group-hover:underline">{now.url}</span>
+                <ExternalLink size={10} className="shrink-0" />
+              </a>
+
+              {/* Affichage du temps */}
+              <div className="text-2xl font-mono font-bold" style={{ color: "var(--c1)" }}>
+                {isLoading ? "--:-- / --:--" : (hasDur ? `${formatTime(pos)} / ${formatTime(dur)}` : "LIVE / ∞")}
+              </div>
+
+              {hasDur && !isLoading && (
+                <div className="text-xs font-mono opacity-50 uppercase tracking-tighter mt-1">
+                  RESTE: {formatTime(remaining)}
                 </div>
               )}
 
-              {/* Étiquettes statut */}
-              <div className="mt-2 flex flex-wrap justify-center md:justify-start items-center gap-2">
+              {/* Badges de Statut */}
+              <div className="mt-4 flex flex-wrap justify-center md:justify-start items-center gap-2">
                 {paused && (
-                  <span className="px-2 py-1 text-xs bg-purple-600 text-white rounded-full inline-flex items-center gap-1">
-                    <PauseCircle className="w-3.5 h-3.5" />
-                    En pause
+                  <span className="px-3 py-1 text-[10px] font-bold bg-purple-600 text-white rounded-full flex items-center gap-1 shadow-lg shadow-purple-600/20">
+                    <PauseCircle size={14} /> EN PAUSE
                   </span>
                 )}
-
                 {repeat && (
-                  <span className="px-2 py-1 text-xs bg-amber-500 text-black rounded-full inline-flex items-center gap-1">
-                    <Repeat className="w-3.5 h-3.5" />
-                    Repeat ON
+                  <span className="px-3 py-1 text-[10px] font-bold bg-amber-500 text-black rounded-full flex items-center gap-1 shadow-lg shadow-amber-500/20">
+                    <Repeat size={14} /> REPEAT
                   </span>
                 )}
-
-                {isBusy && (
-                  <span className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-sky-600 text-white rounded-full">
-                    <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />
-                    traitement…
+                {isLoading && (
+                  <span className="px-3 py-1 text-[10px] font-bold bg-sky-600 text-white rounded-full flex items-center gap-1 animate-pulse">
+                    <Loader2 size={14} className="animate-spin" /> BUFFERING
+                  </span>
+                )}
+                {isBusy && !isLoading && (
+                  <span className="px-3 py-1 text-[10px] font-bold bg-slate-700 text-white rounded-full flex items-center gap-1">
+                    <Loader2 size={14} className="animate-spin" /> SYNC
                   </span>
                 )}
               </div>
 
-              {/* Desktop → spectre dans la colonne (donner une hauteur explicite) */}
+              {/* Spectrum Desktop */}
               <div
-                className={[
-                  "mt-4 hidden md:flex items-end", // md:flex pour aligner les barres en bas si besoin
-                  rainbow ? "animate-hue" : "",
-                ].join(" ")}
-                style={spectrumStyle}
+                className={`mt-6 hidden md:flex items-end transition-opacity duration-500 w-full ${(isLoading || paused) ? "opacity-20 grayscale" : "opacity-100"}`}
+                style={{ height: `${spectrumHeightPx}px` }}
               >
                 <SpectrumBars
-                  playing={!paused}
+                  playing={!paused && !isLoading}
                   bars={spectrumBars}
                   colorFrom={eqColorFrom}
                   colorTo={eqColorTo}
@@ -168,13 +165,13 @@ export default function NowPlaying({
             </div>
           </div>
 
-          {/* Mobile → spectre sous l’image (hauteur explicite aussi) */}
+          {/* Spectrum Mobile */}
           <div
-            className={["mt-4 md:hidden", rainbow ? "animate-hue" : ""].join(" ")}
-            style={spectrumStyle}
+            className={`mt-6 md:hidden transition-opacity duration-500 w-full ${(isLoading || paused) ? "opacity-20 grayscale" : "opacity-100"}`}
+            style={{ height: `${spectrumHeightPx}px` }}
           >
             <SpectrumBars
-              playing={!paused}
+              playing={!paused && !isLoading}
               bars={spectrumBars}
               colorFrom={eqColorFrom}
               colorTo={eqColorTo}
@@ -182,7 +179,9 @@ export default function NowPlaying({
           </div>
         </div>
       ) : (
-        <div className="text-muted text-center">Aucune piste en cours.</div>
+        <div className="py-20 text-muted text-center font-mono animate-pulse uppercase tracking-widest border-2 border-dashed border-white/5 rounded-xl">
+          Aucun signal détecté
+        </div>
       )}
     </section>
   );

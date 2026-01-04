@@ -8,19 +8,21 @@ import path from "node:path";
 import play from "play-dl";
 
 // Imports de tes fichiers locaux
-import { state, nextId, playing } from "./types";
-import { ensurePlayerLoop } from "./player";
+import { state, nextId, playing, setPlaying } from "./types";
+import { ensurePlayerLoop, ensureMpvRunning, skip } from "./player";
 import { 
   mpvPause, 
   mpvQuit, 
   mpvSetLoopFile, 
-  mpvSeekAbsolute 
+  mpvSeekAbsolute, 
+  mpvStop
 } from "./mpv";
 import { 
   resolveUrlToPlayableItems, 
   probeSingle,
   normalizeUrl 
 } from "./ytdlp";
+
 
 const app = express();
 const server = http.createServer(app);
@@ -34,18 +36,38 @@ app.use(express.static(path.resolve(process.cwd(), "../xbox-music-ui/dist")));
 /* --- HELPERS --- */
 
 function computePosition(now: any): number {
-  const base = now.positionOffsetSec || 0;
-  if (now.startedAt == null) return base;
-  return base + Math.max(0, (Date.now() - now.startedAt) / 1000);
+  if (!now) return 0;
+  
+  // Si on est en pause ou si startedAt est nul (pendant un seek), 
+  // on retourne l'offset fixe sans ajouter le temps écoulé
+  if (now.startedAt == null || now.isBuffering) {
+    return now.positionOffsetSec || 0;
+  }
+  
+  const elapsed = (Date.now() - now.startedAt) / 1000;
+  const current = (now.positionOffsetSec || 0) + Math.max(0, elapsed);
+  
+  if (now.durationSec && current > now.durationSec) {
+    return now.durationSec;
+  }
+  
+  return current;
 }
 
 const broadcast = () => {
   const queued = state.queue.filter(q => q.status === "queued");
+  
+  // Calculer le temps total restant dans la file
+  const totalDuration = queued.reduce((acc, item) => acc + (item.durationSec || 0), 0);
+
   io.emit("state", {
     ok: true,
     now: state.now,
     queue: queued.slice(0, 50),
-    totalQueued: queued.length,
+    stats: {
+        totalQueued: queued.length,
+        remainingTimeSec: totalDuration,
+    },
     control: state.control
   });
 };
@@ -147,55 +169,61 @@ io.on("connection", (socket) => {
   });
 
   socket.on("command", async (payload: { cmd: string; arg?: any }) => {
-    const currentPlaying = playing; 
-    try {
-      switch (payload.cmd) {
-        case "pause":
-          state.control.paused = true;
-          if (currentPlaying?.handle) await mpvPause(currentPlaying.handle, true);
-          if (state.now?.startedAt) {
-             const elapsed = (Date.now() - state.now.startedAt) / 1000;
-             state.now.positionOffsetSec = (state.now.positionOffsetSec || 0) + elapsed;
-             state.now.startedAt = null;
+    const h = playing?.handle;
+
+    switch (payload.cmd) {
+      case "pause":
+        state.control.paused = true;
+        if (h) await mpvPause(h, true);
+        if (state.now?.startedAt) {
+          state.now.positionOffsetSec = computePosition(state.now);
+          state.now.startedAt = null; 
+        }
+        break;
+
+      case "resume":
+        state.control.paused = false;
+        if (h) await mpvPause(h, false);
+        // On ne relance le chrono QUE si on n'est pas en train de bufferiser
+        if (state.now && !state.now.isBuffering) {
+          state.now.startedAt = Date.now();
+        }
+        break;
+
+      case "skip":
+        // PROTECTION : On appelle la fonction centralisée du player
+        await skip(broadcast); 
+        break;
+
+      case "seek_abs":
+        if (h && typeof payload.arg === "number") {
+          // 1. Mise à jour immédiate de l'état local pour le prochain broadcast
+          if (state.now) {
+            state.now.positionOffsetSec = payload.arg;
+            // On met startedAt à null pour "geler" le chrono de computePosition
+            // Il sera relancé par l'event "time-pos" reçu de MPV dans tryPlayWith
+            state.now.startedAt = null; 
+            state.now.isBuffering = true; // On simule un buffering pour l'UI
           }
-          break;
 
-        case "resume":
-          state.control.paused = false;
-          if (currentPlaying?.handle) await mpvPause(currentPlaying.handle, false);
-          if (state.now) state.now.startedAt = Date.now();
-          break;
-
-        case "skip":
-          if (currentPlaying?.handle) {
-            console.log("[command] Skip demandé...");
-            // On essaie d'abord de quitter proprement via IPC (arrête le moteur audio)
-            mpvQuit(currentPlaying.handle).catch(() => {
-                // Si ça échoue, on tue le processus
-                currentPlaying?.handle?.kill();
-            });
-          }
-          break;
-
-        case "repeat":
-          state.control.repeat = !state.control.repeat;
-          if (currentPlaying?.handle) await mpvSetLoopFile(currentPlaying.handle, state.control.repeat);
-          break;
-
-        case "seek_abs":
-          if (typeof payload.arg === "number" && currentPlaying?.handle) {
-            await mpvSeekAbsolute(currentPlaying.handle, payload.arg);
-            if (state.now) {
-              state.now.positionOffsetSec = payload.arg;
-              state.now.startedAt = state.now.startedAt ? Date.now() : null;
-            }
-          }
-          break;
-      }
-      broadcast();
-    } catch (e) {
-      console.error("[command] Error:", e);
+          // 2. Envoi de l'ordre à MPV
+          await mpvSeekAbsolute(h, payload.arg);
+          
+          // 3. On broadcast tout de suite pour que l'UI sache que le serveur a accepté le seek
+          broadcast();
+        }
+        break;
+        
+      case "repeat":
+        const isRepeat = Boolean(payload.arg);
+        state.control.repeat = isRepeat;
+        // On informe MPV pour qu'il boucle sur le fichier actuel
+        if (h) {
+          await mpvSetLoopFile(h, isRepeat);
+        }
+        break;
     }
+    broadcast();
   });
 
   socket.on("clear", async () => {
@@ -206,22 +234,48 @@ io.on("connection", (socket) => {
     broadcast();
   });
 
-  socket.on("remove_queue_item", ({ id }) => {
+  socket.on("remove_queue_item", async ({ id }) => {
     const item = state.queue.find(q => q.id === id);
-    const currentPlaying = playing; 
-
     if (item) {
       item.status = "done";
-      if (currentPlaying && currentPlaying.item.id === id && currentPlaying.handle) {
-        mpvQuit(currentPlaying.handle).catch(() => {});
+      // Si on supprime ce qui est en train de jouer, on utilise le skip blindé
+      if (playing && playing.item.id === id) {
+        await skip(broadcast);
+      } else {
+        broadcast();
       }
-      broadcast();
     }
   });
+  
+  // Dans votre fichier serveur (ex: server.ts)
+  socket.on("reorder_queue", ({ ids }: { ids: string[] }) => {
+    // 1. Filtrer les éléments qui sont encore en attente (queued)
+    const queuedItems = state.queue.filter(q => q.status === "queued");
+    
+    // 2. Créer le nouvel ordre basé sur les IDs reçus
+    const reordered = ids
+      .map(id => queuedItems.find(item => item.id === id))
+      .filter((item): item is any => !!item);
+
+    // 3. Récupérer les items qui ne sont pas dans la liste (sécurité)
+    const remaining = queuedItems.filter(q => !ids.includes(q.id));
+
+    // 4. Reconstruire la queue globale (garder les items "playing/done" au début)
+    const completed = state.queue.filter(q => q.status !== "queued");
+    
+    state.queue = [...completed, ...reordered, ...remaining];
+
+    console.log("✅ File réorganisée");
+    broadcast();
+  });
+
 });
 
 async function bootstrap() {
   await setupSpotify();
+    // 🔥 PRÉCHAUFFAGE : On lance MPV tout de suite !
+  // Comme ça, il sera prêt (idle) quand l'utilisateur cliquera sur Play.
+  ensureMpvRunning().catch(console.error);
   const port = process.env.PORT || 4000;
   server.listen(port, () => console.log(`🚀 Server Ready on port ${port}`));
 }

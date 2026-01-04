@@ -1,13 +1,26 @@
-import { spawn } from "child_process";
+import { spawn, exec } from "child_process";
+import { promisify } from "util";
 import play from "play-dl";
+
+const execAsync = promisify(exec);
 
 export type ResolvedItem = {
   url: string;
-  title?: string;
+  title: string;
   thumb?: string;
-  durationSec?: number;
+  durationSec: number;
 };
 
+export type ProbeResult = {
+  title: string;
+  thumb?: string;
+  durationSec: number;
+};
+
+// --- CACHE ---
+type CacheVal<T> = { v: T; exp: number };
+const PROBE_CACHE = new Map<string, CacheVal<ProbeResult>>();
+const FLAT_CACHE = new Map<string, CacheVal<ResolvedItem[]>>();
 const DIRECT_CACHE = new Map<string, CacheVal<string>>();
 
 /* ------------------- CONFIGURATION & UTILS ------------------- */
@@ -21,49 +34,6 @@ function intEnv(name: string, def: number, min?: number, max?: number): number {
   if (typeof max === "number") n = Math.min(max, n);
   return n;
 }
-
-function findYtDlpBinary(): string {
-  const bin = (process.env.YTDLP_BIN || "").trim();
-  if (bin) return bin;
-  return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
-}
-
-function splitArgs(str: string): string[] {
-  const m = str.match(/(?:[^\s"]+|"[^"]*")+/g);
-  if (!m) return [];
-  return m.map((s) => (s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s));
-}
-
-export function normalizeUrl(u: string): string {
-  if (!u) return "";
-  const low = u.toLowerCase();
-  
-  if (low.includes("googleusercontent.com/spotify") || low.includes("spotify.com")) {
-    return u; 
-  }
-
-  try {
-    const url = new URL(u);
-    const host = url.hostname.toLowerCase();
-    if (host.includes("youtu.be")) {
-      const id = url.pathname.replace(/^\/+/, "");
-      return id ? `https://www.youtube.com/watch?v=${id}` : u;
-    }
-    if (host.includes("youtube.com")) {
-      const id = url.searchParams.get("v");
-      if (id) return `https://www.youtube.com/watch?v=${id}`;
-    }
-    return u;
-  } catch {
-    return u;
-  }
-}
-
-/* ------------------- CACHE ------------------- */
-
-type CacheVal<T> = { v: T; exp: number };
-const PROBE_CACHE = new Map<string, CacheVal<ResolvedItem>>();
-const FLAT_CACHE = new Map<string, CacheVal<ResolvedItem[]>>();
 
 const CACHE_TTL = intEnv("YTDLP_CACHE_MS", 600_000, 5_000);
 const CACHE_MAX = intEnv("YTDLP_CACHE_SIZE", 512, 64, 10_000);
@@ -82,21 +52,50 @@ function cacheSet<K, V>(m: Map<K, CacheVal<V>>, k: K, v: V): void {
   m.set(k, { v, exp: Date.now() + CACHE_TTL });
 }
 
+function findYtDlpBinary(): string {
+  const bin = (process.env.YTDLP_BIN || "").trim();
+  if (bin) return bin;
+  return process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp";
+}
+
+function splitArgs(str: string): string[] {
+  const m = str.match(/(?:[^\s"]+|"[^"]*")+/g);
+  if (!m) return [];
+  return m.map((s) => (s.startsWith('"') && s.endsWith('"') ? s.slice(1, -1) : s));
+}
+
+export function normalizeUrl(u: string): string {
+  if (!u) return "";
+  const low = u.toLowerCase();
+  if (low.includes("googleusercontent.com") || low.includes("spotify.com")) return u;
+  try {
+    const url = new URL(u);
+    const host = url.hostname.toLowerCase();
+    if (host.includes("youtu.be")) {
+      const id = url.pathname.replace(/^\/+/, "");
+      return id ? `https://www.youtube.com/watch?v=${id}` : u;
+    }
+    if (host.includes("youtube.com")) {
+      const id = url.searchParams.get("v");
+      if (id) return `https://www.youtube.com/watch?v=${id}`;
+    }
+    return u;
+  } catch { return u; }
+}
+
 function isSpotifyUrl(url: string): boolean {
   const u = url.toLowerCase();
-  return u.includes("googleusercontent.com/spotify") || u.includes("spotify.com");
+  return u.includes("spotify.com") || u.includes("googleusercontent.com/spotify");
 }
 
 /* --------------- YT-DLP RUNNER --------------- */
 
 async function runYtDlpJson(args: string[], inputUrl: string): Promise<any | null> {
   if (isSpotifyUrl(inputUrl)) return null;
-
   return new Promise((resolve) => {
     const bin = findYtDlpBinary();
     const finalArgs = [...splitArgs(process.env.YTDLP_EXTRA_ARGS || ""), ...args, inputUrl];
     const p = spawn(bin, finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
-
     let out = "";
     p.stdout.on("data", (d) => (out += d.toString("utf8")));
     p.on("close", (code) => {
@@ -118,12 +117,11 @@ export async function resolveSpotify(url: string): Promise<ResolvedItem[]> {
        const query = `${t.artists[0]?.name || ""} ${t.name} audio`;
        const searches = await play.search(query, { limit: 1, source: { youtube: "video" } });
        const ytVideo = searches[0];
-
        return {
          url: ytVideo?.url || `https://www.youtube.com/watch?v=dQw4w9WgXcQ`,
          title: `${t.artists[0]?.name || "Artist"} - ${t.name}`,
          thumb: t.thumbnail?.url || ytVideo?.thumbnails[0]?.url,
-         durationSec: t.durationInSec,
+         durationSec: t.durationInSec || 0,
        };
     };
 
@@ -143,117 +141,93 @@ export async function resolveSpotify(url: string): Promise<ResolvedItem[]> {
 
 export async function resolveUrlToPlayableItems(url: string): Promise<ResolvedItem[]> {
   const normalized = normalizeUrl(url);
-
   const cached = cacheGet(FLAT_CACHE, normalized);
   if (cached) return cached;
 
   if (isSpotifyUrl(normalized)) return await resolveSpotify(normalized);
 
-  // 1. LOGIQUE PLAYLIST (YouTube, SoundCloud sets, etc.) - On utilise yt-dlp car play-dl gère moins bien les extracteurs variés
+  // Détection SoundCloud, YouTube Playlist, etc.
   if (normalized.includes("list=") || normalized.includes("/playlist") || normalized.includes("/sets/") || normalized.includes("soundcloud.com")) {
     const isSoundCloud = normalized.includes("soundcloud.com");
     const args = ["-J", "--flat-playlist", "--no-warnings", "--no-check-certificates"];
-
     const j = await runYtDlpJson(args, normalized);
     
     if (j && j.entries) {
-      const items = j.entries.map((e: any) => {
-        const thumb = e.thumbnail || 
-                      (e.thumbnails && e.thumbnails.length > 0 
-                        ? e.thumbnails[e.thumbnails.length - 1].url 
-                        : j.thumbnail);
+      const items: ResolvedItem[] = j.entries
+        .filter((e: any) => e !== null)
+        .map((e: any) => {
+          const thumb = e.thumbnail || (e.thumbnails?.length ? e.thumbnails[e.thumbnails.length - 1].url : j.thumbnail);
+          let finalTitle = e.title || "Titre inconnu";
+          const artist = e.uploader || e.artist || j.uploader;
+          
+          if (artist && !finalTitle.toLowerCase().includes(artist.toLowerCase())) {
+            finalTitle = `${artist} - ${finalTitle}`;
+          }
 
-        let finalTitle = e.title || "Titre inconnu";
-        const artist = e.uploader || e.artist || j.uploader;
+          // Correction URL : Si yt-dlp ne donne que l'ID, on reconstruit l'URL complète
+          let finalUrl = e.url || e.webpage_url;
+          if (finalUrl && !finalUrl.startsWith('http')) {
+             finalUrl = isSoundCloud ? `https://soundcloud.com/${e.id}` : `https://www.youtube.com/watch?v=${e.id}`;
+          }
 
-        if (artist && !finalTitle.toLowerCase().includes(artist.toLowerCase())) {
-          finalTitle = `${artist} - ${finalTitle}`;
-        }
-
-        return {
-          url: e.url || e.webpage_url || (isSoundCloud ? e.url : `https://www.youtube.com/watch?v=${e.id}`),
-          title: finalTitle,
-          thumb: thumb,
-          durationSec: e.duration
-        };
-      });
-      
+          return {
+            url: finalUrl || `https://www.youtube.com/watch?v=${e.id}`,
+            title: finalTitle,
+            thumb: thumb,
+            durationSec: Number(e.duration) || 0
+          };
+        });
       cacheSet(FLAT_CACHE, normalized, items);
       return items;
     }
   }
 
-  // 2. CAS PAR DÉFAUT (Morceau unique)
   const single = await probeSingle(normalized);
-  return [single];
+  return [{ ...single, url: normalized }];
 }
 
-export async function probeSingle(url: string): Promise<ResolvedItem> {
-  const key = normalizeUrl(url);
-  
-  if (isSpotifyUrl(key)) {
-    const items = await resolveSpotify(key);
-    return items[0] || { url: key };
-  }
-
-  const cached = cacheGet(PROBE_CACHE, key);
+export async function probeSingle(url: string): Promise<ProbeResult> {
+  const cached = cacheGet(PROBE_CACHE, url);
   if (cached) return cached;
 
-  // OPTIMISATION : Utilisation de play-dl pour YouTube (Beaucoup plus rapide que l'appel process yt-dlp)
-  if (key.includes("youtube.com") || key.includes("youtu.be")) {
+  if (play.yt_validate(url) === "video") {
     try {
-      const info = await play.video_basic_info(key);
+      const info = await play.video_basic_info(url);
       const res = {
-        url: key,
-        title: info.video_details.title || key,
-        thumb: info.video_details.thumbnails[0]?.url,
-        durationSec: info.video_details.durationInSec,
+        title: info.video_details.title || "Titre inconnu",
+        thumb: info.video_details.thumbnails[info.video_details.thumbnails.length - 1]?.url,
+        durationSec: info.video_details.durationInSec || 0
       };
-      cacheSet(PROBE_CACHE, key, res);
+      cacheSet(PROBE_CACHE, url, res);
       return res;
-    } catch (e) {
-      console.warn("[ytdlp] play-dl basic info failed, falling back to yt-dlp");
-    }
+    } catch {}
   }
 
-  // Fallback sur yt-dlp pour les autres sites (SoundCloud, etc.)
-  const j = await runYtDlpJson(["-J", "--no-playlist"], key);
-  if (!j) return { url: key };
-
-  const res = {
-    url: j.webpage_url || key,
-    title: (j.uploader || j.artist) ? `${j.uploader || j.artist} - ${j.title}` : j.title,
-    thumb: j.thumbnail,
-    durationSec: j.duration,
-  };
-  cacheSet(PROBE_CACHE, key, res);
-  return res;
-}
-
-export async function resolveQuick(url: string): Promise<ResolvedItem[]> {
-  const normalized = normalizeUrl(url);
-  
-  if (isSpotifyUrl(normalized)) {
-    return []; 
+  try {
+    const { stdout } = await execAsync(
+      `${findYtDlpBinary()} --simulate --print-json --format "bestaudio/best" "${url}"`
+    );
+    const data = JSON.parse(stdout);
+    const res = {
+      title: data.title || "Signal inconnu",
+      thumb: data.thumbnail || undefined,
+      durationSec: Number(data.duration) || 0
+    };
+    cacheSet(PROBE_CACHE, url, res);
+    return res;
+  } catch {
+    return { title: "Lien externe", durationSec: 0 };
   }
-  
-  return [{ 
-    url: normalized, 
-    title: "Analyse du signal..." 
-  }];
 }
 
-// ytdlp.ts (Ajoute ces lignes à la fin ou avec les exports)
-
-export const AGE_RESTRICTED = new Set<string>();
-
-/**
- * Cette fonction est un placeholder pour la compatibilité avec player.ts.
- * Elle pourra servir plus tard si tu veux extraire l'URL brute du flux (mp4/webm) 
- * via yt-dlp -g pour outrepasser certains blocages.
- */
 export async function getDirectPlayableUrl(url: string): Promise<string | null> {
   const cached = cacheGet(DIRECT_CACHE, url);
   if (cached) return cached;
-  return null; 
+  
+  try {
+    const { stdout } = await execAsync(`${findYtDlpBinary()} -g -f "bestaudio/best" "${url}"`);
+    const direct = stdout.trim();
+    if (direct) cacheSet(DIRECT_CACHE, url, direct);
+    return direct;
+  } catch { return null; }
 }

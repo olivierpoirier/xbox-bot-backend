@@ -12,6 +12,7 @@ export type Now = {
   group?: string;
   durationSec?: number | null;
   positionOffsetSec?: number;
+  isBuffering: boolean;
 };
 
 export type QueueItem = {

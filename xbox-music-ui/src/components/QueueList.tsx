@@ -170,9 +170,16 @@ export default function QueueList({
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
+
     const oldIndex = queue.findIndex((q) => q.id === active.id);
     const newIndex = queue.findIndex((q) => q.id === over.id);
-    onReorder(arrayMove(queue, oldIndex, newIndex).map((q) => q.id));
+
+    // On calcule le nouvel ordre localement
+    const newOrder = arrayMove(queue, oldIndex, newIndex);
+    
+    // On envoie la liste des IDs réordonnés via la prop onReorder
+    // Cette prop appelle reorderQueue() dans votre Hook, qui contient déjà le emitSafe
+    onReorder(newOrder.map((q) => q.id));
   };
 
   return (

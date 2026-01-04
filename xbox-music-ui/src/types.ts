@@ -1,3 +1,5 @@
+export type Command = "pause" | "resume" | "skip" | "skip_group" | "shuffle" | "repeat" | "seek" | "seek_abs";
+
 export type Control = {
   paused?: boolean;
   volume?: number;     // restera toujours 100 côté serveur
@@ -14,6 +16,7 @@ export type Now = {
   group?: string;
   durationSec?: number;        // NEW
   positionOffsetSec?: number;  // NEW: base pour calculer la position actuelle
+  isBuffering: boolean;
 };
 
 export type QueueItem = {

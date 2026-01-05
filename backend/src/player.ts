@@ -32,7 +32,7 @@ async function tryPlayWith(startUrl: string, item: QueueItem, onStateChange: () 
   try {
     const handle = await ensureMpvRunning();
     
-    // 1. Initialisation de l'état
+    // 1. Initialisation stricte de l'état
     setPlaying({ item, handle });
     state.now = {
       url: item.url,
@@ -41,7 +41,7 @@ async function tryPlayWith(startUrl: string, item: QueueItem, onStateChange: () 
       addedBy: item.addedBy,
       group: item.group,
       durationSec: item.durationSec || 0,
-      isBuffering: true, // Bloque le chrono au début
+      isBuffering: true, 
       positionOffsetSec: 0,
       startedAt: null 
     };
@@ -51,7 +51,7 @@ async function tryPlayWith(startUrl: string, item: QueueItem, onStateChange: () 
     handle.on((ev) => {
       if (!playing || playing.item.id !== currentAttemptId) return;
 
-      // REPEAT / SEEK : Remise à zéro du chrono
+      // REPEAT / SEEK / RESTART
       if (ev.type === "playback-restart") {
         if (state.now) {
           state.now.isBuffering = false;
@@ -61,35 +61,61 @@ async function tryPlayWith(startUrl: string, item: QueueItem, onStateChange: () 
       }
 
       if (ev.type === "property-change") {
-        // Mise à jour de la position (Time Pos)
+        // --- MISE À JOUR DE LA POSITION ---
         if (ev.name === "time-pos" && typeof ev.data === "number") {
-          if (state.now) {
-            state.now.positionOffsetSec = ev.data;
-            
-            // Si on sort du buffering (chargement initial ou après un seek)
-            if (state.now.isBuffering) {
-              state.now.isBuffering = false;
-              state.now.startedAt = state.control.paused ? null : Date.now();
-              console.log(`[player] 🎯 Lecture active à ${ev.data}s`);
-              onStateChange();
+          const now = state.now;
+          if (now) {
+            const currentDuration = now.durationSec ?? 0;
+            const lastOffset = now.positionOffsetSec ?? 0;
+
+            // Protection contre les artefacts de chargement (le bond au temps max)
+            if (currentDuration > 0 && ev.data >= currentDuration && lastOffset < 1) {
+              return;
             }
+
+            // Mise à jour de la position brute
+            now.positionOffsetSec = ev.data;
+
+            // Sortie de buffering
+            if (now.isBuffering) {
+              now.isBuffering = false;
+              // Premier démarrage du chrono
+              if (!state.control.paused) {
+                now.startedAt = Date.now() - (ev.data * 1000);
+              }
+            }
+
+            // --- CORRECTION VITESSE 2X ---
+            // On ne recalibre startedAt que si le décalage (drift) est important (> 1s).
+            // Sinon, on laisse le Date.now() couler naturellement.
+            if (!state.control.paused && now.startedAt) {
+              const theoreticalPos = (Date.now() - now.startedAt) / 1000;
+              const drift = Math.abs(theoreticalPos - ev.data);
+              
+              // Si l'écart entre MPV et le Serveur est trop grand (>1s), on resynchronise.
+              // Cela évite de modifier startedAt à chaque tick (ce qui causait l'accélération).
+              if (drift > 1.0) {
+                 now.startedAt = Date.now() - (ev.data * 1000);
+              }
+            } else if (!state.control.paused && !now.startedAt) {
+              // Cas de reprise après un buffering
+              now.startedAt = Date.now() - (ev.data * 1000);
+            }
+            
+            onStateChange();
           }
         }
 
-        // Mise à jour de la durée réelle
+        // --- MISE À JOUR DE LA DURÉE ---
         if (ev.name === "duration" && typeof ev.data === "number" && state.now) {
-          state.now.durationSec = ev.data;
-          onStateChange();
+          if (ev.data > 0 && state.now.durationSec !== ev.data) {
+            state.now.durationSec = ev.data;
+            onStateChange();
+          }
         }
 
         // --- DÉTECTION DE FIN DE PISTE ---
         if (ev.name === "idle-active" && ev.data === true) {
-          /**
-           * SÉCURITÉ : On ne déclenche la fin que si :
-           * 1. On n'est plus en train de charger (isBuffering: false)
-           * 2. On a déjà une position (positionOffsetSec > 0) ou une durée
-           * Cela évite que MPV ne skip la musique au moment exact où il l'ouvre.
-           */
           const hasStarted = (state.now?.positionOffsetSec || 0) > 0;
           const isNotLoading = state.now?.isBuffering === false;
 
@@ -103,11 +129,8 @@ async function tryPlayWith(startUrl: string, item: QueueItem, onStateChange: () 
     const directUrl = normalizeUrl(startUrl);
     if (!directUrl) throw new Error("URL invalide");
 
-    // 3. Chargement et synchro pause
     await mpvLoadFile(handle, directUrl, false);
     await mpvPause(handle, state.control.paused);
-
-    // 4. Attente du signal de départ
     await handle.waitForPlaybackStart(START_TIMEOUT_MS);
     
     return true;
@@ -126,79 +149,72 @@ async function tryPlayWith(startUrl: string, item: QueueItem, onStateChange: () 
 /**
  * Gère la fin de lecture d'un morceau
  */
-
-/**
- * Gère la fin de lecture d'un morceau.
- * Cette fonction est appelée par l'événement "idle-active" de MPV.
- */
 function handleEndOfTrack(item: QueueItem, onStateChange: () => void) {
   if (item.status === "playing") {
     
-    // CAS DU REPEAT :
-    // Si le mode repeat est actif, MPV ne passe pas réellement en mode "idle"
-    // de manière définitive, il reboucle. L'événement "playback-restart" 
-    // dans tryPlayWith s'occupe de remettre le chrono à zéro.
-    // On sort donc de la fonction pour ne pas marquer le morceau comme "done".
     if (state.control.repeat) {
+      if (state.now) {
+        state.now.positionOffsetSec = 0;
+        state.now.startedAt = Date.now();
+      }
       return; 
     }
 
-    // CAS NORMAL : Le morceau est terminé, on passe au suivant
     console.log(`[player] ✅ Terminé : ${item.title}`);
-    
-    // 1. Marquer l'item actuel comme terminé
     item.status = "done";
-    
-    // 2. Nettoyer l'état global de lecture
     state.now = null;
     setPlaying(null);
-    
-    // 3. Notifier les clients que la lecture est finie (la file va se mettre à jour)
     onStateChange();
     
-    // 4. Lancer la lecture du prochain morceau après un court délai
-    // Ce délai de 100ms permet à MPV de bien finaliser son état interne.
     setTimeout(() => {
       ensurePlayerLoop(onStateChange);
     }, 100);
   }
 }
 
-/* ------------------- BOUCLE DE PLAYLIST ------------------- */
+/* ------------------- BOUCLE DE PLAYLIST COMPLÈTE ------------------- */
 
 export async function ensurePlayerLoop(onStateChange: () => void): Promise<void> {
-  // 1. Verrouillage pour éviter que deux boucles tournent en même temps
+  // 1. Verrouillage
   if (isLooping) return;
 
-  // 2. Vérification de l'état actuel de MPV
-  // Si on pense être en train de jouer mais que MPV est mort, on reset
+  // 2. Vérification MPV
   if (playing && (!globalMpvHandle || globalMpvHandle.proc.exitCode !== null)) {
     console.warn("[player] MPV est mort pendant la lecture, nettoyage...");
     setPlaying(null);
     state.now = null;
   }
 
-  // 3. Si on est déjà en train de jouer quelque chose de valide, on ne fait rien
+  // 3. Si on joue déjà, on ne fait rien
   if (playing && playing.item.status === "playing") return;
 
   isLooping = true;
 
   try {
     // 4. Recherche du prochain morceau "queued"
-    // Note: l'ordre dans state.queue détermine l'ordre de lecture.
     const nextItem = state.queue.find(q => q.status === "queued");
 
     if (!nextItem) {
-      // Plus rien dans la file d'attente
       state.now = null;
       setPlaying(null);
       onStateChange();
       return;
     }
 
+    // --- OPTIMISATION : PRE-PROBE (Pré-chargement) ---
+    // On regarde s'il y a un morceau APRES celui qu'on va lancer
+    // et on lance son analyse YT-DLP tout de suite en arrière-plan.
+    const followUpItem = state.queue.find(q => q.status === "queued" && q.id !== nextItem.id);
+    if (followUpItem) {
+      console.log(`[player] 🔮 Pré-analyse : ${followUpItem.title}`);
+      // On ignore le catch, c'est du bonus, ça ne doit pas bloquer la lecture
+      probeSingle(normalizeUrl(followUpItem.url)).catch(() => {});
+    }
+    // -------------------------------------------------
+
     console.log(`[player] 🎵 Prochain titre : ${nextItem.title}`);
 
-    // 5. Initialisation visuelle immédiate (Feedback utilisateur)
+    // 5. Initialisation visuelle
     nextItem.status = "playing";
     state.now = {
       url: nextItem.url,
@@ -215,9 +231,8 @@ export async function ensurePlayerLoop(onStateChange: () => void): Promise<void>
 
     const url = normalizeUrl(nextItem.url);
 
-    // 6. Enrichissement des métadonnées en arrière-plan (si nécessaire)
+    // 6. Enrichissement (Titre/Cover)
     probeSingle(url).then(info => {
-      // On ne met à jour que si le morceau est toujours celui qui doit jouer
       if (state.now && playing?.item.id === nextItem.id) {
         state.now.title = info.title;
         state.now.thumb = info.thumb || state.now.thumb;
@@ -226,10 +241,10 @@ export async function ensurePlayerLoop(onStateChange: () => void): Promise<void>
       }
     }).catch(() => {});
 
-    // 7. Tentative de lecture n°1 (URL normale ou cache)
+    // 7. Tentative 1
     let success = await tryPlayWith(url, nextItem, onStateChange);
 
-    // 8. Tentative de lecture n°2 (URL directe via yt-dlp si la première a échoué)
+    // 8. Tentative 2 (Direct URL via yt-dlp)
     if (!success) {
       console.log(`[player] Tentative de secours pour : ${nextItem.title}`);
       const direct = await getDirectPlayableUrl(url).catch(() => null);
@@ -238,7 +253,7 @@ export async function ensurePlayerLoop(onStateChange: () => void): Promise<void>
       }
     }
 
-    // 9. Gestion de l'échec définitif
+    // 9. Gestion échec
     if (!success) {
       console.error(`[player] ❌ Échec définitif : ${nextItem.title}`);
       nextItem.status = "error";
@@ -246,9 +261,8 @@ export async function ensurePlayerLoop(onStateChange: () => void): Promise<void>
       setPlaying(null);
       onStateChange();
       
-      // On attend 1 seconde avant de tenter le morceau suivant pour éviter le spam en cas de coupure internet
       setTimeout(() => {
-        isLooping = false; // On libère avant le réappel
+        isLooping = false; 
         ensurePlayerLoop(onStateChange);
       }, 1000);
       return;
@@ -269,12 +283,10 @@ export async function skip(onStateChange: () => void) {
     const h = playing.handle;
     playing.item.status = "done";
     
-    // On nettoie l'état AVANT de stopper MPV pour éviter les flashs d'UI
     state.now = null;
     setPlaying(null);
     onStateChange();
 
-    // Stopper MPV déclenchera l'idle-active mais l'ID aura déjà changé
     await mpvStop(h); 
     void ensurePlayerLoop(onStateChange);
   } else {

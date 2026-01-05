@@ -38,20 +38,21 @@ app.use(express.static(path.resolve(process.cwd(), "../xbox-music-ui/dist")));
 function computePosition(now: any): number {
   if (!now) return 0;
   
-  // Si on est en pause ou si startedAt est nul (pendant un seek), 
-  // on retourne l'offset fixe sans ajouter le temps écoulé
-  if (now.startedAt == null || now.isBuffering) {
-    return now.positionOffsetSec || 0;
+  // 1. Si on est en pause ou en buffering, le temps est figé
+  if (state.control.paused || now.isBuffering || !now.startedAt) {
+    return now.positionOffsetSec ?? 0;
   }
   
-  const elapsed = (Date.now() - now.startedAt) / 1000;
-  const current = (now.positionOffsetSec || 0) + Math.max(0, elapsed);
+  // 2. Calcul de la position fluide
+  // Puisque startedAt = Date.now() - (offset_mpv * 1000)
+  // Alors (Date.now() - startedAt) donne directement la position actuelle en ms
+  const current = (Date.now() - now.startedAt) / 1000;
   
-  if (now.durationSec && current > now.durationSec) {
-    return now.durationSec;
-  }
+  // 3. Sécurité : ne pas dépasser la durée totale
+  const duration = now.durationSec ?? 0;
+  if (duration > 0 && current >= duration) return duration;
   
-  return current;
+  return Math.max(0, current);
 }
 
 const broadcast = () => {

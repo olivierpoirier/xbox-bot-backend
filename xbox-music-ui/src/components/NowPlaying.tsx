@@ -47,16 +47,31 @@ export default function NowPlaying({
   const isLoading = Boolean(now?.url && now?.isBuffering);
   const isBusy = Boolean(busy);
 
+  // --- CORRECTION ICI ---
   const calculatePos = () => {
     if (!now) return 0;
-    if (isLoading || paused || !now.startedAt) return now.positionOffsetSec || 0;
+
+    // Si on est en pause, en chargement, ou sans date de départ, on se fie à la position statique (snapshot)
+    if (isLoading || paused || !now.startedAt) {
+      return now.positionOffsetSec || 0;
+    }
+
+    // Si la lecture est en cours, on calcule SEULEMENT la différence de temps.
+    // `startedAt` contient déjà le calcul de l'offset fait par le backend.
     const elapsedSinceStart = (Date.now() - now.startedAt) / 1000;
-    return (now.positionOffsetSec || 0) + elapsedSinceStart;
+    
+    // On ne rajoute PAS positionOffsetSec ici, sinon on compte le temps en double.
+    return elapsedSinceStart; 
   };
+  // ----------------------
 
   const hasDur = !!now?.durationSec && now.durationSec > 0;
   const dur = hasDur ? now!.durationSec! : 0;
-  const pos = hasDur ? Math.min(dur, Math.max(0, calculatePos())) : calculatePos();
+  
+  // Petit lissage pour éviter que le temps dépasse la durée totale
+  const currentPos = calculatePos();
+  const pos = hasDur ? Math.min(dur, Math.max(0, currentPos)) : Math.max(0, currentPos);
+  
   const remaining = hasDur ? Math.max(0, dur - pos) : 0;
 
   const cardCls = [

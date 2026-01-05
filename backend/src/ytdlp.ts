@@ -190,33 +190,66 @@ export async function probeSingle(url: string): Promise<ProbeResult> {
   const cached = cacheGet(PROBE_CACHE, url);
   if (cached) return cached;
 
+  // 1. Cas spécifique YouTube (Rapide via play-dl)
   if (play.yt_validate(url) === "video") {
     try {
-      const info = await play.video_basic_info(url);
-      const res = {
+      // On utilise video_info pour obtenir des détails plus profonds
+      const info = await play.video_info(url);
+      const res: ProbeResult = {
         title: info.video_details.title || "Titre inconnu",
         thumb: info.video_details.thumbnails[info.video_details.thumbnails.length - 1]?.url,
         durationSec: info.video_details.durationInSec || 0
       };
+
+      // Tentative de récupération du flux direct pour le DIRECT_CACHE
+      // On utilise stream_from_info car c'est plus performant quand on a déjà l'objet 'info'
+      play.stream_from_info(info, { quality: 2 }).then(stream => {
+        // Assertion 'as any' pour accéder à l'URL car l'interface TS de play-dl la cache
+        const directUrl = (stream as any).url;
+        if (directUrl) {
+          cacheSet(DIRECT_CACHE, url, directUrl);
+        }
+      }).catch(() => {});
+
       cacheSet(PROBE_CACHE, url, res);
       return res;
-    } catch {}
+    } catch (e) {
+      console.warn(`[ytdlp] play-dl échoué pour ${url}, basculement sur yt-dlp.`);
+    }
   }
 
+  // 2. Cas général (yt-dlp) - Gère SoundCloud, Twitch, et les erreurs YouTube
   try {
+    /** * On demande le JSON complet. 
+     * L'option --format "bestaudio/best" force yt-dlp à trouver l'URL directe 
+     * que MPV pourra lire instantanément.
+     */
     const { stdout } = await execAsync(
-      `${findYtDlpBinary()} --simulate --print-json --format "bestaudio/best" "${url}"`
+      `${findYtDlpBinary()} --simulate --print-json --format "bestaudio/best" --no-warnings "${url}"`
     );
     const data = JSON.parse(stdout);
-    const res = {
+
+    // Extraction et mise en cache de l'URL directe
+    if (data.url) {
+      cacheSet(DIRECT_CACHE, url, data.url);
+    }
+
+    const res: ProbeResult = {
       title: data.title || "Signal inconnu",
-      thumb: data.thumbnail || undefined,
+      thumb: data.thumbnail || (data.thumbnails?.length ? data.thumbnails[data.thumbnails.length - 1].url : undefined),
       durationSec: Number(data.duration) || 0
     };
+
     cacheSet(PROBE_CACHE, url, res);
     return res;
-  } catch {
-    return { title: "Lien externe", durationSec: 0 };
+  } catch (err) {
+    console.error(`[ytdlp] Erreur de probing sur ${url}:`, err);
+    // Retour par défaut pour ne pas bloquer la file d'attente
+    return { 
+      title: "Lien externe", 
+      durationSec: 0,
+      thumb: undefined
+    };
   }
 }
 

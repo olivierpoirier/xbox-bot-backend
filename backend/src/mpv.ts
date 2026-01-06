@@ -43,23 +43,47 @@ function buildAudioArgs(ipcPath: string): string[] {
     "--input-terminal=no",
     "--term-osd=no",
     "--load-scripts=no",
-    `--volume=80`,
+    
+    // 1. VOLUME : On descend à 80. 
+    // La Xbox applique son propre gain dans les groupes. 
+    // À 100, la console sature le signal avant même que tu l'entendes.
+    "--volume=80",
+    
     `--input-ipc-server=${ipcPath}`,
     "--ytdl-format=bestaudio/best",
     "--ytdl=yes",
+    
+    // --- LE NETTOYAGE CRUCIAL ---
+    // aresample=resampler=soxr : On utilise le meilleur algorithme de conversion au monde (SoX).
+    // lowpass=f=15000 : On coupe un peu plus bas (15kHz) car le codec Xbox ne gère pas bien 
+    // les fréquences au-delà, ce qui cause le grichage des aigus.
+    // loudnorm : On stabilise le tout avec une marge de sécurité (TP=-3).
+    "--af=aresample=resampler=soxr,lowpass=f=15000,loudnorm=I=-20:TP=-3:LRA=7",
+    
+    // --- RÉGLAGES SYSTÈME XBOX ---
+    "--audio-samplerate=48000",
+    "--audio-format=s16", 
     "--audio-channels=stereo",
-    "--af=volume=1.0,dynaudnorm=f=250:g=7:p=0.9:s=30,alimiter=limit=0.9", // Normalisation et anti-clipping
-    "--audio-stream-silence=yes",
+    
+    // --- STABILITÉ FLUX ---
+    "--audio-buffer=0.8",             // Un buffer sous la seconde pour éviter le décalage
     "--cache=yes",
     "--demuxer-max-bytes=128MiB",
+    "--audio-stream-silence=yes",
     "--idle=yes",
     "--keep-open=no",
+
+    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   ];
 
-  if (process.platform === "win32") args.push("--ao=wasapi");
+  if (process.platform === "win32") {
+    args.push("--ao=wasapi");
+  }
 
   const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
-  if (audioDevice) args.push(`--audio-device=${audioDevice}`);
+  if (audioDevice) {
+    args.push(`--audio-device=${audioDevice}`);
+  }
 
   const rawOpts = ["force-ipv4=", "extractor-args=youtube:player_client=android", "no-check-certificate="];
   args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);
@@ -97,8 +121,23 @@ export async function startMpv(url: string): Promise<MpvHandle> {
 
   try { if (process.platform !== "win32" && fs.existsSync(ipcPath)) fs.unlinkSync(ipcPath); } catch {}
 
-  const args = [...buildAudioArgs(ipcPath), url];
-  const proc = spawn(bin, args, { stdio: "ignore" });
+  const args = [...buildAudioArgs(ipcPath)];
+
+  if (url && url.trim().length > 0) {
+    args.push(url);
+  }
+  
+  const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+  // Ajoute ces logs juste après :
+  proc.stderr?.on("data", (data) => {
+    console.error(`[MPV-STDERR] ${data.toString()}`);
+  });
+
+  proc.stdout?.on("data", (data) => {
+    console.log(`[MPV-STDOUT] ${data.toString()}`);
+  });
+
 
   let sock: net.Socket;
   try {

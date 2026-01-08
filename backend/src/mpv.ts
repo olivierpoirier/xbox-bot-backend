@@ -44,29 +44,27 @@ function buildAudioArgs(ipcPath: string): string[] {
     "--term-osd=no",
     "--load-scripts=no",
     
-    // 1. VOLUME : On descend à 80. 
-    // La Xbox applique son propre gain dans les groupes. 
-    // À 100, la console sature le signal avant même que tu l'entendes.
-    "--volume=80",
+    // On remonte un peu le volume (80 -> 90)
+    // C'est souvent le manque de gain qui donne une impression de son "vieux"
+    "--volume=90",
     
     `--input-ipc-server=${ipcPath}`,
     "--ytdl-format=bestaudio/best",
     "--ytdl=yes",
     
-    // --- LE NETTOYAGE CRUCIAL ---
-    // aresample=resampler=soxr : On utilise le meilleur algorithme de conversion au monde (SoX).
-    // lowpass=f=15000 : On coupe un peu plus bas (15kHz) car le codec Xbox ne gère pas bien 
-    // les fréquences au-delà, ce qui cause le grichage des aigus.
-    // loudnorm : On stabilise le tout avec une marge de sécurité (TP=-3).
-    "--af=aresample=resampler=soxr,lowpass=f=15000,loudnorm=I=-20:TP=-3:LRA=7",
+    // --- AMÉLIORATION QUALITÉ AUDIO ---
+    // 1. On retire "lowpass=f=15000" -> Ça redonne les aigus (clarté).
+    // 2. On retire "resampler=soxr" -> Ça enlève les craquements (grichage) dus au CPU.
+    // 3. On garde un loudnorm très léger pour l'équilibre sur Xbox.
+    "--af=loudnorm=I=-16:TP=-1.5:LRA=11",
     
-    // --- RÉGLAGES SYSTÈME XBOX ---
     "--audio-samplerate=48000",
     "--audio-format=s16", 
     "--audio-channels=stereo",
     
-    // --- STABILITÉ FLUX ---
-    "--audio-buffer=0.8",             // Un buffer sous la seconde pour éviter le décalage
+    // --- STABILITÉ ---
+    // On augmente légèrement le buffer pour éviter le grichage réseau
+    "--audio-buffer=2.0", 
     "--cache=yes",
     "--demuxer-max-bytes=128MiB",
     "--audio-stream-silence=yes",
@@ -85,7 +83,12 @@ function buildAudioArgs(ipcPath: string): string[] {
     args.push(`--audio-device=${audioDevice}`);
   }
 
-  const rawOpts = ["force-ipv4=", "extractor-args=youtube:player_client=android", "no-check-certificate="];
+  // Tes arguments d'origine qui fonctionnaient pour la connexion :
+  const rawOpts = [
+    "force-ipv4=", 
+    "extractor-args=youtube:player_client=android", 
+    "no-check-certificate="
+  ];
   args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);
 
   return args;

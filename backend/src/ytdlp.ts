@@ -112,43 +112,57 @@ async function runYtDlpJson(args: string[], inputUrl: string): Promise<any | nul
 
 export async function resolveSpotify(url: string): Promise<ResolvedItem[]> {
   try {
-    // CORRECTION ICI : Suppression du 'await' devant play.is_expired()
     if (play.is_expired()) await play.refreshToken();
 
     const data = await play.spotify(url);
     
-    // Fonction helper pour trouver la bonne vidéo avec la bonne durée
     const trackToItem = async (t: any): Promise<ResolvedItem> => {
-       const artist = t.artists[0]?.name || "Artist";
+       const artist = t.artists[0]?.name || "";
        const title = t.name;
-       // Recherche plus précise "Artiste - Titre"
        const query = `${artist} - ${title}`;
        const targetDuration = t.durationInSec || 0;
 
-       // On cherche 5 résultats pour comparer les durées
-       const searches = await play.search(query, { limit: 5, source: { youtube: "video" } });
+       // On récupère 10 résultats pour avoir un plus large choix de comparaison
+       const searches = await play.search(query, { limit: 10, source: { youtube: "video" } });
        
-       let bestMatch = searches[0];
-
-       // Logique de correspondance de durée (Magic Fix)
-       if (targetDuration > 0 && searches.length > 0) {
-         const sorted = searches.sort((a, b) => {
-            const diffA = Math.abs((a.durationInSec || 0) - targetDuration);
-            const diffB = Math.abs((b.durationInSec || 0) - targetDuration);
-            return diffA - diffB;
-         });
-         // On prend celui qui a la durée la plus proche
-         bestMatch = sorted[0];
+       if (searches.length === 0) {
+         return {
+           url: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`,
+           title: `${artist} - ${title}`,
+           durationSec: targetDuration
+         };
        }
 
-       // Fallback au cas où rien n'est trouvé
-       const fallbackUrl = bestMatch?.url || `https://www.youtube.com/watch?v=dQw4w9WgXcQ`;
+       // --- SYSTÈME DE SCORE PAR MOTS-CLÉS ---
+       // On prépare la liste des mots importants (minuscules, sans ponctuation)
+       const searchWords = query.toLowerCase().split(/[\s\-\(\)\[\]]+/).filter(w => w.length > 1);
+
+       const sorted = searches.sort((a, b) => {
+          const titleA = (a.title || "").toLowerCase();
+          const titleB = (b.title || "").toLowerCase();
+
+          // On compte combien de mots de la recherche sont présents dans le titre YouTube
+          const scoreA = searchWords.reduce((acc, word) => acc + (titleA.includes(word) ? 1 : 0), 0);
+          const scoreB = searchWords.reduce((acc, word) => acc + (titleB.includes(word) ? 1 : 0), 0);
+
+          // 1. Priorité absolue : celui qui a le plus de mots correspondants (ex: "DIO")
+          if (scoreA !== scoreB) {
+            return scoreB - scoreA; 
+          }
+
+          // 2. Si le score est identique, on utilise la durée comme juge de paix
+          const diffA = Math.abs((a.durationInSec || 0) - targetDuration);
+          const diffB = Math.abs((b.durationInSec || 0) - targetDuration);
+          return diffA - diffB;
+       });
+
+       const bestMatch = sorted[0];
 
        return {
-         url: fallbackUrl,
+         url: bestMatch.url,
          title: `${artist} - ${title}`,
-         thumb: t.thumbnail?.url || bestMatch?.thumbnails[0]?.url,
-         durationSec: targetDuration // On garde la durée officielle Spotify
+         thumb: t.thumbnail?.url || bestMatch.thumbnails[0]?.url,
+         durationSec: targetDuration 
        };
     };
 
@@ -156,7 +170,6 @@ export async function resolveSpotify(url: string): Promise<ResolvedItem[]> {
     
     if (data instanceof play.SpotifyAlbum || data instanceof play.SpotifyPlaylist) {
       const tracks = await data.all_tracks();
-      // On limite à 50 pour éviter le ban IP de YouTube
       return await Promise.all(tracks.slice(0, 50).map(t => trackToItem(t)));
     }
     return [];

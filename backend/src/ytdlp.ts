@@ -108,26 +108,55 @@ async function runYtDlpJson(args: string[], inputUrl: string): Promise<any | nul
 
 /* --------------- SPOTIFY RESOLVER --------------- */
 
+/* --------------- SPOTIFY RESOLVER OPTIMISÉ --------------- */
+
 export async function resolveSpotify(url: string): Promise<ResolvedItem[]> {
   try {
-    if (await play.is_expired()) await play.refreshToken();
+    // CORRECTION ICI : Suppression du 'await' devant play.is_expired()
+    if (play.is_expired()) await play.refreshToken();
+
     const data = await play.spotify(url);
     
+    // Fonction helper pour trouver la bonne vidéo avec la bonne durée
     const trackToItem = async (t: any): Promise<ResolvedItem> => {
-       const query = `${t.artists[0]?.name || ""} ${t.name} audio`;
-       const searches = await play.search(query, { limit: 1, source: { youtube: "video" } });
-       const ytVideo = searches[0];
+       const artist = t.artists[0]?.name || "Artist";
+       const title = t.name;
+       // Recherche plus précise "Artiste - Titre"
+       const query = `${artist} - ${title}`;
+       const targetDuration = t.durationInSec || 0;
+
+       // On cherche 5 résultats pour comparer les durées
+       const searches = await play.search(query, { limit: 5, source: { youtube: "video" } });
+       
+       let bestMatch = searches[0];
+
+       // Logique de correspondance de durée (Magic Fix)
+       if (targetDuration > 0 && searches.length > 0) {
+         const sorted = searches.sort((a, b) => {
+            const diffA = Math.abs((a.durationInSec || 0) - targetDuration);
+            const diffB = Math.abs((b.durationInSec || 0) - targetDuration);
+            return diffA - diffB;
+         });
+         // On prend celui qui a la durée la plus proche
+         bestMatch = sorted[0];
+       }
+
+       // Fallback au cas où rien n'est trouvé
+       const fallbackUrl = bestMatch?.url || `https://www.youtube.com/watch?v=dQw4w9WgXcQ`;
+
        return {
-         url: ytVideo?.url || `https://www.youtube.com/watch?v=dQw4w9WgXcQ`,
-         title: `${t.artists[0]?.name || "Artist"} - ${t.name}`,
-         thumb: t.thumbnail?.url || ytVideo?.thumbnails[0]?.url,
-         durationSec: t.durationInSec || 0,
+         url: fallbackUrl,
+         title: `${artist} - ${title}`,
+         thumb: t.thumbnail?.url || bestMatch?.thumbnails[0]?.url,
+         durationSec: targetDuration // On garde la durée officielle Spotify
        };
     };
 
     if (data instanceof play.SpotifyTrack) return [await trackToItem(data)];
+    
     if (data instanceof play.SpotifyAlbum || data instanceof play.SpotifyPlaylist) {
       const tracks = await data.all_tracks();
+      // On limite à 50 pour éviter le ban IP de YouTube
       return await Promise.all(tracks.slice(0, 50).map(t => trackToItem(t)));
     }
     return [];

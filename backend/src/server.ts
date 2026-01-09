@@ -31,7 +31,7 @@ const io = new IOServer(server, {
   perMessageDeflate: false 
 });
 
-app.use(express.static(path.resolve(process.cwd(), "../xbox-music-ui/dist")));
+app.use(express.static(path.resolve(process.cwd(), "../frontend/dist")));
 
 /* --- HELPERS --- */
 
@@ -92,6 +92,15 @@ async function setupSpotify() {
 }
 
 /* --- LOGIQUE SOCKET --- */
+// Cette route répondra quand vous visiterez l'URL racine
+app.get('/', (req, res) => {
+  res.send('🚀 Le serveur Music-Bot est ici et opérationnel !');
+});
+
+// Optionnel : Une route de santé pour vérifier l'état
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
 
 io.on("connection", (socket) => {
   broadcast();

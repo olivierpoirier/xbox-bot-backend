@@ -1,30 +1,17 @@
+// src/mpv.ts
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import fs from "fs";
 import net from "net";
 import crypto from "crypto";
-
-/* ------------------- TYPES ------------------- */
-
-export type MpvEvent =
-  | { type: "file-loaded" }
-  | { type: "playback-restart" }
-  | { type: "property-change"; name: string; data: unknown };
-
-export type MpvHandle = {
-  proc: ChildProcess;
-  sock: net.Socket;
-  send: (cmd: unknown) => Promise<void>;
-  kill: () => void;
-  on: (fn: (ev: MpvEvent) => void) => () => void; // Retourne une fonction pour unbind
-  waitForPlaybackStart: (timeoutMs?: number) => Promise<void>;
-};
+import { MPV_CONFIG } from "./config";
+import { MpvEvent, MpvHandle } from "./types";
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /* ------------------- UTILS ------------------- */
 
 function findPlayerBinary(): string {
-  const bin = (process.env.MPV_BIN || "").trim();
+  const bin = MPV_CONFIG.bin;
   if (bin) return bin;
 
   const ok = (cmd: string): boolean => {
@@ -32,6 +19,7 @@ function findPlayerBinary(): string {
       return spawnSync(cmd, ["--version"], { stdio: "ignore" }).status === 0;
     } catch { return false; }
   };
+  
   if (ok("mpv")) return "mpv";
   if (ok("mpvnet")) return "mpvnet";
   throw new Error("mpv introuvable.");
@@ -39,80 +27,19 @@ function findPlayerBinary(): string {
 
 function buildAudioArgs(ipcPath: string): string[] {
   const args: string[] = [
-    "--video=no",
-    "--input-terminal=no",
-    "--term-osd=no",
-    "--load-scripts=no",
-    
-    // On remonte un peu le volume (80 -> 90)
-    // C'est souvent le manque de gain qui donne une impression de son "vieux"
-    "--volume=90",
-    
+    ...MPV_CONFIG.baseArgs,
     `--input-ipc-server=${ipcPath}`,
+    `--af=${MPV_CONFIG.audioFilters}`,
+    `--user-agent=${MPV_CONFIG.userAgent}`,
+    `--ytdl-raw-options=${MPV_CONFIG.ytdlRawOptions.join(",")}`,
     "--ytdl-format=bestaudio/best",
-    "--ytdl=yes",
-    
-    // --- AMÉLIORATION QUALITÉ AUDIO ---
-    // 1. On retire "lowpass=f=15000" -> Ça redonne les aigus (clarté).
-    // 2. On retire "resampler=soxr" -> Ça enlève les craquements (grichage) dus au CPU.
-    // 3. On garde un loudnorm très léger pour l'équilibre sur Xbox.
-    "--af=loudnorm=I=-16:TP=-1.5:LRA=11",
-    
-    "--audio-samplerate=48000",
-    "--audio-format=s16", 
-    "--audio-channels=stereo",
-    
-    // --- STABILITÉ ---
-    // On augmente légèrement le buffer pour éviter le grichage réseau
-    "--audio-buffer=2.0", 
-    "--cache=yes",
-    "--demuxer-max-bytes=128MiB",
-    "--audio-stream-silence=yes",
-    "--idle=yes",
-    "--keep-open=no",
-
-    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "--ytdl=yes"
   ];
 
-  if (process.platform === "win32") {
-    args.push("--ao=wasapi");
-  }
-
-  const audioDevice = (process.env.MPV_AUDIO_DEVICE || "").trim();
-  if (audioDevice) {
-    args.push(`--audio-device=${audioDevice}`);
-  }
-
-  // Tes arguments d'origine qui fonctionnaient pour la connexion :
-  const rawOpts = [
-    "force-ipv4=", 
-    "extractor-args=youtube:player_client=android", 
-    "no-check-certificate="
-  ];
-  args.push(`--ytdl-raw-options=${rawOpts.join(",")}`);
+  if (process.platform === "win32") args.push("--ao=wasapi");
+  if (MPV_CONFIG.audioDevice) args.push(`--audio-device=${MPV_CONFIG.audioDevice}`);
 
   return args;
-}
-
-async function connectIpc(pipePath: string, proc: ChildProcess, timeoutMs = 5000): Promise<net.Socket> {
-  const start = Date.now();
-  let delay = 20;
-
-  while (Date.now() - start < timeoutMs) {
-    if (proc.exitCode !== null) throw new Error(`MPV est mort (code: ${proc.exitCode})`);
-    try {
-      const sock = net.connect(pipePath as any);
-      await new Promise<void>((res, rej) => {
-        sock.once("connect", () => { sock.removeAllListeners("error"); res(); });
-        sock.once("error", rej);
-      });
-      return sock;
-    } catch {
-      await wait(delay);
-      delay = Math.min(delay * 1.5, 200);
-    }
-  }
-  throw new Error("Impossible de se connecter à l'IPC mpv");
 }
 
 /* ------------------- CORE ------------------- */
@@ -125,22 +52,9 @@ export async function startMpv(url: string): Promise<MpvHandle> {
   try { if (process.platform !== "win32" && fs.existsSync(ipcPath)) fs.unlinkSync(ipcPath); } catch {}
 
   const args = [...buildAudioArgs(ipcPath)];
-
-  if (url && url.trim().length > 0) {
-    args.push(url);
-  }
+  if (url?.trim()) args.push(url);
   
   const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
-
-  // Ajoute ces logs juste après :
-  proc.stderr?.on("data", (data) => {
-    console.error(`[MPV-STDERR] ${data.toString()}`);
-  });
-
-  proc.stdout?.on("data", (data) => {
-    console.log(`[MPV-STDOUT] ${data.toString()}`);
-  });
-
 
   let sock: net.Socket;
   try {
@@ -151,7 +65,6 @@ export async function startMpv(url: string): Promise<MpvHandle> {
   }
 
   let started = false;
-  let startReject: ((e: any) => void) | null = null;
   let startResolve: (() => void) | null = null;
   const listeners = new Set<(ev: MpvEvent) => void>();
 
@@ -189,41 +102,55 @@ export async function startMpv(url: string): Promise<MpvHandle> {
     try { sock.write(JSON.stringify(cmd) + "\n", () => resolve()); } catch { resolve(); }
   });
 
-  // Abonnement aux propriétés essentielles
   await send({ command: ["observe_property", 1, "duration"] });
   await send({ command: ["observe_property", 2, "idle-active"] });
   await send({ command: ["observe_property", 3, "time-pos"] });
 
-  const kill = () => {
-    listeners.clear();
-    try { sock.destroy(); } catch {}
-    if (proc.pid) {
-      if (process.platform === "win32") spawn("taskkill", ["/pid", proc.pid.toString(), "/f", "/t"]);
-      else proc.kill("SIGKILL");
-    }
-  };
-
-  proc.once("exit", () => { try { sock.destroy(); } catch {} });
-
   return {
-    proc, sock, send, kill,
+    proc, sock, send, 
+    kill: () => {
+      listeners.clear();
+      try { sock.destroy(); } catch {}
+      if (proc.pid) {
+        if (process.platform === "win32") spawn("taskkill", ["/pid", proc.pid.toString(), "/f", "/t"]);
+        else proc.kill("SIGKILL");
+      }
+    },
     on: (fn) => { 
       listeners.add(fn); 
       return () => listeners.delete(fn); 
     },
-    waitForPlaybackStart: (timeoutMs = 20000) => {
+    waitForPlaybackStart: (timeoutMs = MPV_CONFIG.globalStartTimeoutMs) => {
       if (started) return Promise.resolve();
       return new Promise<void>((res, rej) => {
         const to = setTimeout(() => rej(new Error(`Timeout mpv ${timeoutMs}ms`)), timeoutMs);
         startResolve = () => { clearTimeout(to); res(); };
-        startReject = (e) => { clearTimeout(to); rej(e); };
       });
     },
   };
 }
 
-/* ------------------- COMMANDES SÉCURISÉES ------------------- */
+async function connectIpc(pipePath: string, proc: ChildProcess, timeoutMs = MPV_CONFIG.ipcConnectTimeoutMs): Promise<net.Socket> {
+  const start = Date.now();
+  let delay = 20;
+  while (Date.now() - start < timeoutMs) {
+    if (proc.exitCode !== null) throw new Error("MPV exit");
+    try {
+      const sock = net.connect(pipePath as any);
+      await new Promise<void>((res, rej) => {
+        sock.once("connect", () => { sock.removeAllListeners("error"); res(); });
+        sock.once("error", rej);
+      });
+      return sock;
+    } catch {
+      await wait(delay);
+      delay = Math.min(delay * 1.5, 200);
+    }
+  }
+  throw new Error("IPC Timeout");
+}
 
+/* ------------------- COMMANDES ------------------- */
 async function safeSend(h: MpvHandle, cmd: any, context: string) {
   if (!h.sock || h.sock.destroyed || !h.sock.writable) return;
   try { await h.send(cmd); } catch (e) { console.error(`[mpv] ${context} error:`, e); }

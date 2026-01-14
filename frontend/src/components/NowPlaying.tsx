@@ -44,34 +44,28 @@ export default function NowPlaying({
     return () => clearInterval(interval);
   }, [paused, now?.startedAt, now?.isBuffering]);
 
-  const isLoading = Boolean(now?.url && now?.isBuffering);
+  // États logiques
+  const isBuffering = Boolean(now?.isBuffering);
   const isBusy = Boolean(busy);
+  
+  // On considère qu'on a un vrai titre si ce n'est pas le placeholder par défaut
+  const hasRealTitle = now?.title && 
+                       now.title !== "Analyse du signal..." && 
+                       now.title !== "Initialisation du flux...";
 
-  // --- CORRECTION ICI ---
   const calculatePos = () => {
     if (!now) return 0;
-
-    // Si on est en pause, en chargement, ou sans date de départ, on se fie à la position statique (snapshot)
-    if (isLoading || paused || !now.startedAt) {
+    if (isBuffering || paused || !now.startedAt) {
       return now.positionOffsetSec || 0;
     }
-
-    // Si la lecture est en cours, on calcule SEULEMENT la différence de temps.
-    // `startedAt` contient déjà le calcul de l'offset fait par le backend.
     const elapsedSinceStart = (Date.now() - now.startedAt) / 1000;
-    
-    // On ne rajoute PAS positionOffsetSec ici, sinon on compte le temps en double.
     return elapsedSinceStart; 
   };
-  // ----------------------
 
   const hasDur = !!now?.durationSec && now.durationSec > 0;
   const dur = hasDur ? now!.durationSec! : 0;
-  
-  // Petit lissage pour éviter que le temps dépasse la durée totale
   const currentPos = calculatePos();
   const pos = hasDur ? Math.min(dur, Math.max(0, currentPos)) : Math.max(0, currentPos);
-  
   const remaining = hasDur ? Math.max(0, dur - pos) : 0;
 
   const cardCls = [
@@ -79,7 +73,7 @@ export default function NowPlaying({
     rainbow ? "neon-glow rainbow-border animate-hue" : "neon-glow themed-border",
   ].join(" ");
 
-  const playingGlow = (!paused && !isLoading && now?.url)
+  const playingGlow = (!paused && !isBuffering && now?.url)
     ? "ring-2 ring-[var(--c1)]/40 shadow-lg shadow-[var(--c1)]/20 animate-pulse"
     : "";
 
@@ -99,14 +93,14 @@ export default function NowPlaying({
                 <img
                   src={now.thumb}
                   alt={now.title || "cover"}
-                  className={`w-56 h-56 rounded-lg object-cover border border-slate-700 transition-all duration-700 ${playingGlow} ${isLoading ? "grayscale blur-sm scale-95" : "scale-100"}`}
+                  className={`w-56 h-56 rounded-lg object-cover border border-slate-700 transition-all duration-700 ${playingGlow} ${isBuffering ? "grayscale blur-sm scale-95" : "scale-100"}`}
                 />
               ) : (
                 <div className="w-56 h-56 rounded-lg bg-black/20 flex items-center justify-center border border-white/5">
                   <Music className="opacity-20 w-12 h-12" />
                 </div>
               )}
-              {isLoading && (
+              {isBuffering && (
                 <div className="absolute inset-0 flex items-center justify-center">
                   <Loader2 className="w-12 h-12 text-white animate-spin" />
                 </div>
@@ -114,9 +108,9 @@ export default function NowPlaying({
             </div>
 
             <div className="flex-1 min-w-0 flex flex-col items-center md:items-start justify-center">
-              {/* Titre */}
-              <div className="text-xl font-black italic uppercase leading-tight line-clamp-2">
-                {isLoading ? "Initialisation du flux..." : (now.title || "Flux audio")}
+              {/* Titre : Affiche le vrai titre dès qu'on l'a, sinon met un message d'attente */}
+              <div className="text-xl font-black italic uppercase leading-tight line-clamp-2 min-h-[3.5rem]">
+                {hasRealTitle ? now.title : (isBuffering ? "Initialisation du flux..." : "Analyse du signal...")}
               </div>
 
               {/* URL CLIQUABLE */}
@@ -130,13 +124,16 @@ export default function NowPlaying({
                 <ExternalLink size={10} className="shrink-0" />
               </a>
 
-              {/* Affichage du temps */}
+              {/* Affichage du temps : On affiche le temps même en buffering si on connaît la durée */}
               <div className="text-2xl font-mono font-bold" style={{ color: "var(--c1)" }}>
-                {isLoading ? "--:-- / --:--" : (hasDur ? `${formatTime(pos)} / ${formatTime(dur)}` : "LIVE / ∞")}
+                {isBuffering && !hasDur 
+                  ? "--:-- / --:--" 
+                  : (hasDur ? `${formatTime(pos)} / ${formatTime(dur)}` : "LIVE / ∞")
+                }
               </div>
 
-              {hasDur && !isLoading && (
-                <div className="text-xs font-mono opacity-50 uppercase tracking-tighter mt-1">
+              {hasDur && (
+                <div className={`text-xs font-mono opacity-50 uppercase tracking-tighter mt-1 transition-opacity ${isBuffering ? 'opacity-0' : 'opacity-50'}`}>
                   RESTE: {formatTime(remaining)}
                 </div>
               )}
@@ -153,12 +150,12 @@ export default function NowPlaying({
                     <Repeat size={14} /> REPEAT
                   </span>
                 )}
-                {isLoading && (
+                {isBuffering && (
                   <span className="px-3 py-1 text-[10px] font-bold bg-sky-600 text-white rounded-full flex items-center gap-1 animate-pulse">
-                    <Loader2 size={14} className="animate-spin" /> BUFFERING
+                    <Loader2 size={14} className="animate-spin" /> CHARGEMENT
                   </span>
                 )}
-                {isBusy && !isLoading && (
+                {isBusy && !isBuffering && (
                   <span className="px-3 py-1 text-[10px] font-bold bg-slate-700 text-white rounded-full flex items-center gap-1">
                     <Loader2 size={14} className="animate-spin" /> SYNC
                   </span>
@@ -167,11 +164,11 @@ export default function NowPlaying({
 
               {/* Spectrum Desktop */}
               <div
-                className={`mt-6 hidden md:flex items-end transition-opacity duration-500 w-full ${(isLoading || paused) ? "opacity-20 grayscale" : "opacity-100"}`}
+                className={`mt-6 hidden md:flex items-end transition-opacity duration-500 w-full ${(isBuffering || paused) ? "opacity-20 grayscale" : "opacity-100"}`}
                 style={{ height: `${spectrumHeightPx}px` }}
               >
                 <SpectrumBars
-                  playing={!paused && !isLoading}
+                  playing={!paused && !isBuffering}
                   bars={spectrumBars}
                   colorFrom={eqColorFrom}
                   colorTo={eqColorTo}
@@ -182,11 +179,11 @@ export default function NowPlaying({
 
           {/* Spectrum Mobile */}
           <div
-            className={`mt-6 md:hidden transition-opacity duration-500 w-full ${(isLoading || paused) ? "opacity-20 grayscale" : "opacity-100"}`}
+            className={`mt-6 md:hidden transition-opacity duration-500 w-full ${(isBuffering || paused) ? "opacity-20 grayscale" : "opacity-100"}`}
             style={{ height: `${spectrumHeightPx}px` }}
           >
             <SpectrumBars
-              playing={!paused && !isLoading}
+              playing={!paused && !isBuffering}
               bars={spectrumBars}
               colorFrom={eqColorFrom}
               colorTo={eqColorTo}

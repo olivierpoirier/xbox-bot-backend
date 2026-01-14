@@ -8,21 +8,19 @@ import path from "node:path";
 import play from "play-dl";
 
 // Imports de tes fichiers locaux
-import { state, nextId, playing, setPlaying } from "./types";
+import { state, nextId, playing } from "./types";
 import { ensurePlayerLoop, ensureMpvRunning, skip } from "./player";
 import { 
   mpvPause, 
   mpvQuit, 
   mpvSetLoopFile, 
-  mpvSeekAbsolute, 
-  mpvStop
+  mpvSeekAbsolute 
 } from "./mpv";
 import { 
   resolveUrlToPlayableItems, 
   probeSingle,
   normalizeUrl 
 } from "./ytdlp";
-
 
 const app = express();
 const server = http.createServer(app);
@@ -35,35 +33,36 @@ app.use(express.static(path.resolve(process.cwd(), "../frontend/dist")));
 
 /* --- HELPERS --- */
 
+/**
+ * Calcule la position actuelle du titre en cours pour synchroniser les nouveaux clients
+ */
 function computePosition(now: any): number {
   if (!now) return 0;
   
-  // 1. Si on est en pause ou en buffering, le temps est figé
+  // Si en pause ou buffering, on retourne l'offset figé
   if (state.control.paused || now.isBuffering || !now.startedAt) {
     return now.positionOffsetSec ?? 0;
   }
   
-  // 2. Calcul de la position fluide
-  // Puisque startedAt = Date.now() - (offset_mpv * 1000)
-  // Alors (Date.now() - startedAt) donne directement la position actuelle en ms
+  // Calcul fluide : (Maintenant - Date de début)
   const current = (Date.now() - now.startedAt) / 1000;
   
-  // 3. Sécurité : ne pas dépasser la durée totale
   const duration = now.durationSec ?? 0;
   if (duration > 0 && current >= duration) return duration;
   
   return Math.max(0, current);
 }
 
+/**
+ * Envoie l'état global à tous les clients connectés
+ */
 const broadcast = () => {
   const queued = state.queue.filter(q => q.status === "queued");
-  
-  // Calculer le temps total restant dans la file
   const totalDuration = queued.reduce((acc, item) => acc + (item.durationSec || 0), 0);
 
   io.emit("state", {
     ok: true,
-    now: state.now,
+    now: state.now, // Contient title, thumb, durationSec, etc.
     queue: queued.slice(0, 50),
     stats: {
         totalQueued: queued.length,
@@ -91,20 +90,19 @@ async function setupSpotify() {
   }
 }
 
-/* --- LOGIQUE SOCKET --- */
-// Cette route répondra quand vous visiterez l'URL racine
-app.get('/', (req, res) => {
-  res.send('🚀 Le serveur Music-Bot est ici et opérationnel !');
+/* --- ROUTES HTTP --- */
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime(), now: !!state.now });
 });
 
-// Optionnel : Une route de santé pour vérifier l'état
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
-});
+/* --- LOGIQUE SOCKET --- */
 
 io.on("connection", (socket) => {
+  // Envoi immédiat de l'état à la connexion
   broadcast();
 
+  // Envoi de la position précise pour synchroniser le curseur du nouveau client
   if (state.now) {
     socket.emit("progress", {
       positionSec: computePosition(state.now),
@@ -123,52 +121,68 @@ io.on("connection", (socket) => {
       const addedBy = (payload.addedBy || "anon").slice(0, 32);
       const normalized = normalizeUrl(raw);
       
-      const isSpotify = normalized.includes("spotify.com") || normalized.includes("googleusercontent.com/spotify");
+      const isSpotify = normalized.includes("spotify.com") || normalized.includes("open.spotify");
       const isPlaylist = normalized.includes("list=") || normalized.includes("/playlist") || normalized.includes("/sets/");
 
       if (isSpotify || isPlaylist) {
-        // --- MODE PLAYLIST (Traitement groupé) ---
+        // --- MODE PLAYLIST ---
         socket.emit("toast", "Analyse de la playlist...");
         const items = await resolveUrlToPlayableItems(normalized);
-        const group = `pl_${Date.now()}`;
         
+        const group = `pl_${Date.now()}`;
         for (const it of items) {
           state.queue.push({
             id: String(nextId.current++),
             url: it.url,
-            title: it.title || "Chargement...",
-            thumb: it.thumb,
-            durationSec: it.durationSec,
-            addedBy, group, status: "queued", createdAt: Date.now()
+            title: it.title || "Titre en attente...",
+            thumb: it.thumb || null,
+            durationSec: it.durationSec || 0,
+            addedBy, 
+            group, 
+            status: "queued", 
+            createdAt: Date.now()
           });
         }
+        socket.emit("toast", `${items.length} titres ajoutés !`);
       } else {
-        // --- MODE SIMPLE (Vitesse maximale) ---
+        // --- MODE SIMPLE ---
         const entryId = String(nextId.current++);
         
-        // On ajoute immédiatement avec un titre temporaire
+        // 1. Ajout immédiat pour le feedback visuel (Placeholder)
         state.queue.push({
           id: entryId,
           url: normalized,
           title: "Analyse du signal...",
+          thumb: null,
           addedBy,
           status: "queued",
           createdAt: Date.now()
         });
 
-        // On lance l'enrichissement (titre/pochette) en arrière-plan
+        // Broadcast immédiat pour afficher le "Analyse du signal..."
+        broadcast();
+
+        // 2. Enrichissement en arrière-plan (Titre, Image, Durée)
         probeSingle(normalized).then(enriched => {
           const item = state.queue.find(q => q.id === entryId);
           if (item) {
             item.title = enriched.title;
-            item.thumb = enriched.thumb;
+            // Le ?? null convertit undefined en null
+            item.thumb = enriched.thumb ?? null; 
             item.durationSec = enriched.durationSec;
+            
+            // Si le morceau est passé en lecture pendant le probe, on met à jour state.now aussi
+            if (state.now && state.now.url === item.url) {
+              state.now.title = enriched.title;
+              state.now.thumb = enriched.thumb ?? null;
+              state.now.durationSec = enriched.durationSec;
+            }
             broadcast();
           }
         }).catch(() => {});
       }
 
-      // On broadcast l'ajout (même partiel) et on lance le moteur de lecture
+      // Lancer le moteur de lecture
       broadcast();
       void ensurePlayerLoop(broadcast);
 
@@ -194,32 +208,23 @@ io.on("connection", (socket) => {
       case "resume":
         state.control.paused = false;
         if (h) await mpvPause(h, false);
-        // On ne relance le chrono QUE si on n'est pas en train de bufferiser
         if (state.now && !state.now.isBuffering) {
-          state.now.startedAt = Date.now();
+          state.now.startedAt = Date.now() - ((state.now.positionOffsetSec || 0) * 1000);
         }
         break;
 
       case "skip":
-        // PROTECTION : On appelle la fonction centralisée du player
         await skip(broadcast); 
         break;
 
       case "seek_abs":
         if (h && typeof payload.arg === "number") {
-          // 1. Mise à jour immédiate de l'état local pour le prochain broadcast
           if (state.now) {
             state.now.positionOffsetSec = payload.arg;
-            // On met startedAt à null pour "geler" le chrono de computePosition
-            // Il sera relancé par l'event "time-pos" reçu de MPV dans tryPlayWith
             state.now.startedAt = null; 
-            state.now.isBuffering = true; // On simule un buffering pour l'UI
+            state.now.isBuffering = true;
           }
-
-          // 2. Envoi de l'ordre à MPV
           await mpvSeekAbsolute(h, payload.arg);
-          
-          // 3. On broadcast tout de suite pour que l'UI sache que le serveur a accepté le seek
           broadcast();
         }
         break;
@@ -227,10 +232,7 @@ io.on("connection", (socket) => {
       case "repeat":
         const isRepeat = Boolean(payload.arg);
         state.control.repeat = isRepeat;
-        // On informe MPV pour qu'il boucle sur le fichier actuel
-        if (h) {
-          await mpvSetLoopFile(h, isRepeat);
-        }
+        if (h) await mpvSetLoopFile(h, isRepeat);
         break;
     }
     broadcast();
@@ -238,8 +240,7 @@ io.on("connection", (socket) => {
 
   socket.on("clear", async () => {
     state.queue.forEach(q => { if (q.status === "queued") q.status = "done"; });
-    const currentPlaying = playing;
-    if (currentPlaying?.handle) await mpvQuit(currentPlaying.handle);
+    if (playing?.handle) await mpvQuit(playing.handle);
     state.now = null;
     broadcast();
   });
@@ -248,7 +249,6 @@ io.on("connection", (socket) => {
     const item = state.queue.find(q => q.id === id);
     if (item) {
       item.status = "done";
-      // Si on supprime ce qui est en train de jouer, on utilise le skip blindé
       if (playing && playing.item.id === id) {
         await skip(broadcast);
       } else {
@@ -257,36 +257,33 @@ io.on("connection", (socket) => {
     }
   });
   
-  // Dans votre fichier serveur (ex: server.ts)
   socket.on("reorder_queue", ({ ids }: { ids: string[] }) => {
-    // 1. Filtrer les éléments qui sont encore en attente (queued)
     const queuedItems = state.queue.filter(q => q.status === "queued");
-    
-    // 2. Créer le nouvel ordre basé sur les IDs reçus
     const reordered = ids
       .map(id => queuedItems.find(item => item.id === id))
       .filter((item): item is any => !!item);
 
-    // 3. Récupérer les items qui ne sont pas dans la liste (sécurité)
     const remaining = queuedItems.filter(q => !ids.includes(q.id));
-
-    // 4. Reconstruire la queue globale (garder les items "playing/done" au début)
     const completed = state.queue.filter(q => q.status !== "queued");
     
     state.queue = [...completed, ...reordered, ...remaining];
-
-    console.log("✅ File réorganisée");
     broadcast();
   });
-
 });
 
 async function bootstrap() {
   await setupSpotify();
-    // 🔥 PRÉCHAUFFAGE : On lance MPV tout de suite !
-  // Comme ça, il sera prêt (idle) quand l'utilisateur cliquera sur Play.
+  // Pré-chargement de MPV pour éviter le lag au premier clic
   ensureMpvRunning().catch(console.error);
+  
   const port = process.env.PORT || 4000;
-  server.listen(port, () => console.log(`🚀 Server Ready on port ${port}`));
+  server.listen(port, () => {
+    console.log(`
+    🎵 MUSIC BOT SERVER READY
+    🚀 Port: ${port}
+    🌐 Mode: ${process.env.NODE_ENV || 'development'}
+    `);
+  });
 }
+
 bootstrap();

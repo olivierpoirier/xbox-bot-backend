@@ -1,4 +1,3 @@
-// src/mpv.ts
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import fs from "fs";
 import net from "net";
@@ -10,6 +9,9 @@ const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /* ------------------- UTILS ------------------- */
 
+/**
+ * Tente de trouver l'exécutable MPV
+ */
 function findPlayerBinary(): string {
   const bin = MPV_CONFIG.bin;
   if (bin) return bin;
@@ -22,45 +24,94 @@ function findPlayerBinary(): string {
   
   if (ok("mpv")) return "mpv";
   if (ok("mpvnet")) return "mpvnet";
-  throw new Error("mpv introuvable.");
+  throw new Error("❌ Exécutable MPV introuvable. Vérifiez votre installation ou votre fichier .env");
 }
 
+/**
+ * Construit les arguments pour le lancement de MPV
+ */
 function buildAudioArgs(ipcPath: string): string[] {
   const args: string[] = [
     ...MPV_CONFIG.baseArgs,
     `--input-ipc-server=${ipcPath}`,
-    `--af=${MPV_CONFIG.audioFilters}`,
     `--user-agent=${MPV_CONFIG.userAgent}`,
-    `--ytdl-raw-options=${MPV_CONFIG.ytdlRawOptions.join(",")}`,
-    "--ytdl-format=bestaudio/best",
-    "--ytdl=yes"
+    // On force un niveau de log verbeux pour voir les erreurs d'initialisation audio
+    "--msg-level=all=v", 
   ];
 
-  if (process.platform === "win32") args.push("--ao=wasapi");
-  if (MPV_CONFIG.audioDevice) args.push(`--audio-device=${MPV_CONFIG.audioDevice}`);
+  if (MPV_CONFIG.audioFilters) {
+    args.push(`--af=${MPV_CONFIG.audioFilters}`);
+  }
+
+  // Options yt-dlp
+  args.push(`--ytdl-raw-options=${MPV_CONFIG.ytdlRawOptions.join(",")}`);
+  args.push("--ytdl-format=bestaudio/best");
+  args.push("--ytdl=yes");
+
+  // Sortie audio WASAPI pour Windows
+  if (process.platform === "win32") {
+    args.push("--ao=wasapi");
+  }
+  
+  if (MPV_CONFIG.audioDevice && MPV_CONFIG.audioDevice.trim() !== "") {
+    args.push(`--audio-device=${MPV_CONFIG.audioDevice}`);
+  }
 
   return args;
 }
 
 /* ------------------- CORE ------------------- */
 
+/**
+ * Démarre le moteur MPV et établit la connexion IPC
+ */
 export async function startMpv(url: string): Promise<MpvHandle> {
   const bin = findPlayerBinary();
   const id = crypto.randomBytes(4).toString("hex");
   const ipcPath = process.platform === "win32" ? `\\\\.\\pipe\\xmb_ipc_${id}` : `/tmp/xmb_mpv_${id}.sock`;
 
-  try { if (process.platform !== "win32" && fs.existsSync(ipcPath)) fs.unlinkSync(ipcPath); } catch {}
+  // Nettoyage de l'ancien socket sur Linux/Mac
+  try { 
+    if (process.platform !== "win32" && fs.existsSync(ipcPath)) {
+      fs.unlinkSync(ipcPath);
+    } 
+  } catch {}
 
-  const args = [...buildAudioArgs(ipcPath)];
+  const args = buildAudioArgs(ipcPath);
   if (url?.trim()) args.push(url);
   
+  console.log(`[DEBUG] Commande complète : ${bin} ${args.join(" ")}`);
+
   const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+  // --- CAPTURE DES LOGS ---
+  const lastLogs: string[] = [];
+  const capture = (data: Buffer) => {
+    const s = data.toString().trim();
+    if (!s) return;
+    lastLogs.push(s);
+    if (lastLogs.length > 50) lastLogs.shift(); // Garde les 50 dernières lignes
+    console.log(`[MPV-PROCESS] ${s}`);
+  };
+
+  proc.stdout.on("data", capture);
+  proc.stderr.on("data", capture);
+
+  proc.on('error', (err) => {
+    console.error(`[SYSTEM-ERROR] Impossible de lancer MPV :`, err);
+  });
 
   let sock: net.Socket;
   try {
-    sock = await connectIpc(ipcPath, proc);
+    sock = await connectIpc(ipcPath, proc, lastLogs);
   } catch (e) {
-    if (proc.pid) proc.kill("SIGKILL");
+    if (proc.pid) {
+        console.error("\n--- ANALYSE DU CRASH MPV ---");
+        console.error("Derniers messages reçus de MPV :");
+        console.error(lastLogs.slice(-10).join("\n"));
+        console.error("-----------------------------\n");
+        proc.kill("SIGKILL");
+    }
     throw e;
   }
 
@@ -102,6 +153,7 @@ export async function startMpv(url: string): Promise<MpvHandle> {
     try { sock.write(JSON.stringify(cmd) + "\n", () => resolve()); } catch { resolve(); }
   });
 
+  // Observation des propriétés pour le tracking de lecture
   await send({ command: ["observe_property", 1, "duration"] });
   await send({ command: ["observe_property", 2, "idle-active"] });
   await send({ command: ["observe_property", 3, "time-pos"] });
@@ -123,34 +175,47 @@ export async function startMpv(url: string): Promise<MpvHandle> {
     waitForPlaybackStart: (timeoutMs = MPV_CONFIG.globalStartTimeoutMs) => {
       if (started) return Promise.resolve();
       return new Promise<void>((res, rej) => {
-        const to = setTimeout(() => rej(new Error(`Timeout mpv ${timeoutMs}ms`)), timeoutMs);
+        const to = setTimeout(() => rej(new Error(`Timeout lecture mpv ${timeoutMs}ms`)), timeoutMs);
         startResolve = () => { clearTimeout(to); res(); };
       });
     },
   };
 }
 
-async function connectIpc(pipePath: string, proc: ChildProcess, timeoutMs = MPV_CONFIG.ipcConnectTimeoutMs): Promise<net.Socket> {
+/**
+ * Gère la connexion au socket IPC avec retry
+ */
+async function connectIpc(pipePath: string, proc: ChildProcess, lastLogs: string[], timeoutMs = MPV_CONFIG.ipcConnectTimeoutMs): Promise<net.Socket> {
   const start = Date.now();
-  let delay = 20;
+  let delay = 100;
+  
   while (Date.now() - start < timeoutMs) {
-    if (proc.exitCode !== null) throw new Error("MPV exit");
+    if (proc.exitCode !== null) {
+      throw new Error(`MPV Crash (Code ${proc.exitCode}).\nLogs récents:\n${lastLogs.slice(-5).join("\n")}`);
+    }
+    
     try {
       const sock = net.connect(pipePath as any);
-      await new Promise<void>((res, rej) => {
-        sock.once("connect", () => { sock.removeAllListeners("error"); res(); });
-        sock.once("error", rej);
+      return await new Promise<net.Socket>((res, rej) => {
+        sock.once("connect", () => {
+          sock.removeAllListeners("error");
+          res(sock);
+        });
+        sock.once("error", (e) => {
+          sock.destroy();
+          rej(e);
+        });
       });
-      return sock;
     } catch {
       await wait(delay);
-      delay = Math.min(delay * 1.5, 200);
+      delay = Math.min(delay * 1.5, 500);
     }
   }
-  throw new Error("IPC Timeout");
+  throw new Error("Impossible d'établir la connexion IPC avec MPV (Timeout). Vérifiez si MPV est bloqué.");
 }
 
 /* ------------------- COMMANDES ------------------- */
+
 async function safeSend(h: MpvHandle, cmd: any, context: string) {
   if (!h.sock || h.sock.destroyed || !h.sock.writable) return;
   try { await h.send(cmd); } catch (e) { console.error(`[mpv] ${context} error:`, e); }

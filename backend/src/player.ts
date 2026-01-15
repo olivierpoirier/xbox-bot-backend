@@ -1,4 +1,5 @@
 // src/player.ts
+import play from "play-dl"; // NÉCESSAIRE pour le lazy loading
 import { state, playing, setPlaying, QueueItem, MpvHandle } from "./types";
 import { startMpv, mpvPause, mpvLoadFile, mpvStop, mpvSetLoopFile } from "./mpv";
 import { probeSingle, getDirectPlayableUrl, normalizeUrl } from "./ytdlp";
@@ -56,6 +57,7 @@ async function tryPlayWith(startUrl: string, item: QueueItem, onStateChange: () 
     onStateChange();
 
     // 2. Gestion des événements MPV
+    // Note: handle.on est compatible avec notre nouveau mpv.ts (EventEmitter)
     handle.on((ev) => {
       // Sécurité : on ignore les événements si on a changé de morceau entre temps
       if (!playing || playing.item.id !== currentAttemptId) return;
@@ -185,13 +187,42 @@ export async function ensurePlayerLoop(onStateChange: () => void): Promise<void>
 
     // 🔮 Pré-analyse du morceau suivant (Bonus performance)
     const followUpItem = state.queue.find(q => q.status === "queued" && q.id !== nextItem.id);
-    if (followUpItem) {
+    if (followUpItem && !followUpItem.url.startsWith("provider:")) {
       probeSingle(normalizeUrl(followUpItem.url)).catch(() => {});
     }
 
-    console.log(`[player] 🎵 Lecture de : ${nextItem.title}`);
+    console.log(`[player] 🎵 Préparation : ${nextItem.title}`);
+
+    // --- LAZY LOADING / RESOLUTION À LA VOLÉE ---
+    // C'est ici qu'on transforme le lien Spotify "placeholder" en vrai lien YouTube
+    if (nextItem.url.startsWith("provider:spotify:")) {
+      console.log(`[player] 🔎 Résolution Spotify pour : ${nextItem.title}`);
+      try {
+        const query = nextItem.url.replace("provider:spotify:", "");
+        // Recherche YouTube ciblée (rapide)
+        const searchResults = await play.search(query, { limit: 1, source: { youtube: "video" } });
+        
+        if (searchResults && searchResults.length > 0) {
+          nextItem.url = searchResults[0].url; // Mise à jour avec la vraie URL
+          console.log(`[player] ✅ Lien YouTube trouvé : ${nextItem.url}`);
+        } else {
+          throw new Error("Introuvable sur YouTube");
+        }
+      } catch (e) {
+        console.error(`[player] ❌ Échec résolution : ${nextItem.title}`, e);
+        nextItem.status = "error";
+        
+        // On skip proprement et on passe au suivant
+        setPlaying(null);
+        state.now = null;
+        onStateChange();
+        setTimeout(() => ensurePlayerLoop(onStateChange), 100);
+        return; // Important : on sort de la boucle actuelle
+      }
+    }
+    // --------------------------------------------
+
     nextItem.status = "playing";
-    
     const url = normalizeUrl(nextItem.url);
 
     // Tentative 1 : URL directe (YouTube/SoundCloud/etc via MPV)

@@ -119,7 +119,7 @@ export async function resolveUrlToPlayableItems(url: string): Promise<ResolvedIt
         const items = data.entries.map((e: any) => ({
           url: e.url || (e.id ? `https://www.youtube.com/watch?v=${e.id}` : ""),
           title: e.title || "Titre inconnu",
-          thumb: e.thumbnail || null,
+          thumb: e.thumbnail || (e.thumbnails && e.thumbnails.length > 0 ? e.thumbnails[e.thumbnails.length - 1].url : null),
           durationSec: Number(e.duration) || 0
         })).filter((i: any) => i.url);
         cacheSet(FLAT_CACHE, normalized, items);

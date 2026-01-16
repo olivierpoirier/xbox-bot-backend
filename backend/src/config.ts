@@ -14,31 +14,39 @@ export const MPV_CONFIG = {
     "--volume=100", 
     
     // --- QUALITÉ AUDIO ---
-    // On ne spécifie pas samplerate pour laisser MPV gérer le natif
-    "--audio-format=s32",
+    "--audio-format=float", 
     "--audio-channels=stereo",
-    "--gapless-audio=yes",     
+    "--audio-samplerate=48000", 
+    "--audio-resample-filter-size=24", 
+    "--audio-resample-cutoff=0",       
+    "--audio-resample-linear=yes",     
+    "--gapless-audio=yes", 
+    "--audio-pitch-correction=yes", 
     
-    // --- RÉSEAU & CACHE ---
-    "--audio-buffer=3.0",      
+    // --- STABILITÉ YTDL (CORRECTION ICI) ---
+    // On dit explicitement à MPV de ne chercher que de l'audio dès le départ
+    "--ytdl-format=bestaudio/best",
+    
+    // --- FLUIDITÉ ---
+    "--audio-buffer=5.0",      
     "--cache=yes",
-    "--demuxer-max-bytes=256MiB", 
+    "--demuxer-max-bytes=512MiB", 
+    "--demuxer-readahead-secs=20", 
     
     "--audio-stream-silence=yes",
     "--idle=yes",
     "--keep-open=no",
   ],
   
-  audioFilters: "loudnorm=I=-16:TP=-1.5:LRA=11", 
+  audioFilters: "", 
   
   userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   
-  // SYNTAXE CORRIGÉE POUR MPV 0.40.0
-  // On ajoute '=' à la fin des options qui n'ont pas de valeur explicite
-  ytdlRawOptions: [
+    ytdlRawOptions: [
     "force-ipv4=",
-    "extractor-args=youtube:player_client=android",
-    "no-check-certificate="
+    "no-check-certificate=",
+    // On met des guillemets autour de la valeur complexe ou on simplifie
+    "extractor-args=youtube:player_client=android", 
   ],
   
   ipcConnectTimeoutMs: 5000,
@@ -50,10 +58,11 @@ export const YTDLP_CONFIG = {
   
   extraArgs: [
     "--force-ipv4",
-    "--format", "bestaudio/best",
-    "--extract-audio",
-    "--audio-quality", "0", 
-    "--audio-format", "best"
+    // Priorité à la meilleure qualité audio, peu importe le conteneur
+    "--format", "bestaudio/best", 
+    // NE PAS utiliser --extract-audio ni --audio-format ici si c'est pour du streaming direct.
+    // MPV lit le flux direct. La conversion fait perdre de la qualité.
+    // Gardez ces options uniquement si vous téléchargez des fichiers sur le disque.
   ],
   
   cacheTTL: 600000,

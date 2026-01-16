@@ -11,7 +11,8 @@ export type MpvEvent =
 
 export type MpvHandle = {
   proc: ChildProcess;
-  sock: net.Socket;
+  // CHANGEMENT ICI : On ajoute "| null" pour correspondre à l'implémentation
+  sock: net.Socket | null; 
   send: (cmd: unknown) => Promise<void>;
   kill: () => void;
   on: (fn: (ev: MpvEvent) => void) => () => void;
@@ -38,7 +39,7 @@ export type QueueItem = {
   id: string;
   url: string;
   title?: string;
-  thumb: string | null; // Déjà bon ou mis à jour
+  thumb: string | null;
   group?: string;
   addedBy?: string;
   status: "queued" | "playing" | "done" | "error";

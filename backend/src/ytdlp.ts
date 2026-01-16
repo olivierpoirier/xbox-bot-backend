@@ -1,13 +1,9 @@
-// src/ytdlp.ts
-import { spawn, exec } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import play from "play-dl";
 import { YTDLP_CONFIG } from "./config";
 import { ProbeResult, ResolvedItem } from "./types";
 
-const execAsync = promisify(exec);
-
-/* ------------------- CACHE (Utilise YTDLP_CONFIG) ------------------- */
+/* ------------------- CACHE ------------------- */
 type CacheVal<T> = { v: T; exp: number };
 const PROBE_CACHE = new Map<string, CacheVal<ProbeResult>>();
 const FLAT_CACHE = new Map<string, CacheVal<ResolvedItem[]>>();
@@ -31,10 +27,6 @@ function cacheSet<K, V>(m: Map<K, CacheVal<V>>, k: K, v: V): void {
 
 export function normalizeUrl(u: string): string {
   if (!u) return "";
-  const low = u.toLowerCase();
-  // Gestion spécifique des URLs déjà traitées ou internes
-  if (low.includes("googleusercontent.com") || low.includes("spotify.com")) return u;
-  
   try {
     const url = new URL(u);
     const host = url.hostname.toLowerCase();
@@ -50,83 +42,54 @@ export function normalizeUrl(u: string): string {
   } catch { return u; }
 }
 
-function isSpotifyUrl(url: string): boolean {
-  const u = url.toLowerCase();
-  return u.includes("spotify.com") || u.includes("googleusercontent.com/spotify");
-}
+/* --------------- YT-DLP SPANNER (Sécurisé) --------------- */
 
-/* --------------- YT-DLP RUNNER --------------- */
-
-async function runYtDlpJson(args: string[], inputUrl: string): Promise<any | null> {
-  if (isSpotifyUrl(inputUrl)) return null;
-  return new Promise((resolve) => {
-    // On utilise le binaire et les arguments de la config
-    const bin = YTDLP_CONFIG.bin;
-    const finalArgs = [...YTDLP_CONFIG.extraArgs, ...args, inputUrl];
-    
-    const p = spawn(bin, finalArgs, { stdio: ["ignore", "pipe", "pipe"] });
+async function runYtDlp(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const p = spawn(YTDLP_CONFIG.bin, [...YTDLP_CONFIG.extraArgs, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
-    p.stdout.on("data", (d) => (out += d.toString("utf8")));
+    let err = "";
+    p.stdout.on("data", (d) => (out += d.toString()));
+    p.stderr.on("data", (d) => (err += d.toString()));
     p.on("close", (code) => {
-      if (code === 0 && out) {
-        try { resolve(JSON.parse(out)); } catch { resolve(null); }
-      } else { resolve(null); }
+      if (code === 0) resolve(out.trim());
+      else reject(new Error(err || `Exit code ${code}`));
     });
   });
 }
 
-/* --------------- SPOTIFY RESOLVER --------------- */
+/* --------------- SPOTIFY (FAST RESOLVE) --------------- */
 
+/**
+ * Optimisation : On ne cherche PAS sur YouTube ici.
+ * On crée juste un "placeholder" que player.ts résoudra au dernier moment.
+ */
 export async function resolveSpotify(url: string): Promise<ResolvedItem[]> {
   try {
-    // play.setToken est déjà appelé dans server.ts, on vérifie juste l'expiration
     if (play.is_expired()) await play.refreshToken();
-
     const data = await play.spotify(url);
-    
-    const trackToItem = async (t: any): Promise<ResolvedItem> => {
-       const artist = t.artists[0]?.name || "";
-       const title = t.name;
-       const query = `${artist} - ${title}`;
-       const targetDuration = t.durationInSec || 0;
 
-       // Recherche YouTube pour trouver le meilleur match
-       const searches = await play.search(query, { limit: 5, source: { youtube: "video" } });
-       
-       if (searches.length === 0) {
-         return {
-           url: `https://www.youtube.com/watch?v=dQw4w9WgXcQ`, // Fallback
-           title: query,
-           durationSec: targetDuration
-         };
-       }
-
-       // Scoring simple : mots-clés + proximité de durée
-       const searchWords = query.toLowerCase().split(/[\s\-]+/).filter(w => w.length > 1);
-       const bestMatch = searches.sort((a, b) => {
-          const scoreA = searchWords.reduce((acc, w) => acc + (a.title?.toLowerCase().includes(w) ? 1 : 0), 0);
-          const scoreB = searchWords.reduce((acc, w) => acc + (b.title?.toLowerCase().includes(w) ? 1 : 0), 0);
-          if (scoreA !== scoreB) return scoreB - scoreA;
-          return Math.abs((a.durationInSec || 0) - targetDuration) - Math.abs((b.durationInSec || 0) - targetDuration);
-       })[0];
-
-       return {
-         url: bestMatch.url,
-         title: query,
-         thumb: t.thumbnail?.url || bestMatch.thumbnails[0]?.url,
-         durationSec: targetDuration 
-       };
+    const trackToPlaceholder = (t: any): ResolvedItem => {
+      const artist = t.artists?.[0]?.name || "";
+      const title = t.name;
+      const query = `${artist} - ${title}`;
+      return {
+        // Préfixe spécial pour que player.ts sache qu'il faut chercher
+        url: `provider:spotify:${query}`, 
+        title: title,
+        thumb: t.thumbnail?.url || null,
+        durationSec: t.durationInSec || 0
+      };
     };
 
-    if (data instanceof play.SpotifyTrack) return [await trackToItem(data)];
+    if (data instanceof play.SpotifyTrack) return [trackToPlaceholder(data)];
     if (data instanceof play.SpotifyAlbum || data instanceof play.SpotifyPlaylist) {
       const tracks = await data.all_tracks();
-      // On limite à 100 morceaux pour éviter de saturer les APIs
-      return await Promise.all(tracks.slice(0, 100).map(t => trackToItem(t)));
+      return tracks.slice(0, 200).map(t => trackToPlaceholder(t));
     }
     return [];
-  } catch (e: any) {
-    console.error("[ytdlp] Spotify Error:", e.message);
+  } catch (e) {
+    console.error("[ytdlp] Spotify Error:", e);
     return [];
   }
 }
@@ -135,83 +98,92 @@ export async function resolveSpotify(url: string): Promise<ResolvedItem[]> {
 
 export async function resolveUrlToPlayableItems(url: string): Promise<ResolvedItem[]> {
   const normalized = normalizeUrl(url);
+  
+  // 1. Cache
   const cached = cacheGet(FLAT_CACHE, normalized);
   if (cached) return cached;
 
-  if (isSpotifyUrl(normalized)) return await resolveSpotify(normalized);
+  // 2. Spotify (Ultra rapide avec les placeholders)
+  if (normalized.includes("spotify.com")) {
+    const items = await resolveSpotify(normalized);
+    cacheSet(FLAT_CACHE, normalized, items);
+    return items;
+  }
 
-  // Détection Playlists (YouTube, SoundCloud, etc.)
-  if (normalized.includes("list=") || normalized.includes("/playlist") || normalized.includes("/sets/") || normalized.includes("soundcloud.com")) {
-    const args = ["-J", "--flat-playlist", "--no-warnings"];
-    const j = await runYtDlpJson(args, normalized);
-    
-    if (j && j.entries) {
-      const items: ResolvedItem[] = j.entries
-        .filter((e: any) => e !== null)
-        .map((e: any) => ({
-            url: e.url || (e.id ? (normalized.includes("soundcloud") ? `https://soundcloud.com/${e.id}` : `https://www.youtube.com/watch?v=${e.id}`) : ""),
-            title: e.title || "Titre inconnu",
-            thumb: e.thumbnail,
-            durationSec: Number(e.duration) || 0
+  // 3. Playlists (YouTube / SoundCloud)
+  if (normalized.includes("list=") || normalized.includes("/playlist") || normalized.includes("/sets/")) {
+    try {
+      const json = await runYtDlp(["--flat-playlist", "-J", normalized]);
+      const data = JSON.parse(json);
+      if (data.entries) {
+        const items = data.entries.map((e: any) => ({
+          url: e.url || (e.id ? `https://www.youtube.com/watch?v=${e.id}` : ""),
+          title: e.title || "Titre inconnu",
+          thumb: e.thumbnail || null,
+          durationSec: Number(e.duration) || 0
         })).filter((i: any) => i.url);
-
-      cacheSet(FLAT_CACHE, normalized, items);
-      return items;
+        cacheSet(FLAT_CACHE, normalized, items);
+        return items;
+      }
+    } catch (e) {
+      console.error("[ytdlp] Playlist error:", e);
     }
   }
 
+  // 4. Single
   const single = await probeSingle(normalized);
   return [{ ...single, url: normalized }];
 }
 
 export async function probeSingle(url: string): Promise<ProbeResult> {
+  // Ignorer les placeholders
+  if (url.startsWith("provider:")) return { title: url.split(":").pop() || "Track", durationSec: 0 };
+
   const cached = cacheGet(PROBE_CACHE, url);
   if (cached) return cached;
 
-  // 1. YouTube rapide via play-dl
+  // Priorité play-dl (plus rapide que spawn yt-dlp)
   if (play.yt_validate(url) === "video") {
     try {
       const info = await play.video_info(url);
-      const res: ProbeResult = {
+      const res = {
         title: info.video_details.title || "YouTube Video",
-        thumb: info.video_details.thumbnails.pop()?.url,
+        thumb: info.video_details.thumbnails.pop()?.url || null,
         durationSec: info.video_details.durationInSec || 0
       };
       cacheSet(PROBE_CACHE, url, res);
       return res;
-    } catch { /* fallback to yt-dlp */ }
+    } catch {}
   }
 
-  // 2. Cas général via yt-dlp
+  // Fallback yt-dlp
   try {
-    const { stdout } = await execAsync(
-      `"${YTDLP_CONFIG.bin}" --simulate --print-json --format "bestaudio/best" "${url}"`
-    );
-    const data = JSON.parse(stdout);
-
-    if (data.url) cacheSet(DIRECT_CACHE, url, data.url);
-
-    const res: ProbeResult = {
+    const json = await runYtDlp(["--simulate", "--print-json", url]);
+    const data = JSON.parse(json);
+    const res = {
       title: data.title || "Lien externe",
-      thumb: data.thumbnail,
+      thumb: data.thumbnail || null,
       durationSec: Number(data.duration) || 0
     };
-
+    if (data.url) cacheSet(DIRECT_CACHE, url, data.url);
     cacheSet(PROBE_CACHE, url, res);
     return res;
-  } catch (err) {
+  } catch {
     return { title: "Morceau inconnu", durationSec: 0 };
   }
 }
 
 export async function getDirectPlayableUrl(url: string): Promise<string | null> {
+  if (url.startsWith("provider:")) return null;
+
   const cached = cacheGet(DIRECT_CACHE, url);
   if (cached) return cached;
   
   try {
-    const { stdout } = await execAsync(`"${YTDLP_CONFIG.bin}" -g -f "bestaudio/best" "${url}"`);
-    const direct = stdout.trim();
+    const direct = await runYtDlp(["-g", "-f", "bestaudio/best", url]);
     if (direct) cacheSet(DIRECT_CACHE, url, direct);
     return direct;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }

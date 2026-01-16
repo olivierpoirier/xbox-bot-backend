@@ -21,6 +21,7 @@ import {
   probeSingle,
   normalizeUrl 
 } from "./ytdlp";
+import { ensureVoicemeeterReady } from "./utils";
 
 const app = express();
 const server = http.createServer(app);
@@ -272,18 +273,19 @@ io.on("connection", (socket) => {
 });
 
 async function bootstrap() {
-  await setupSpotify();
-  // Pré-chargement de MPV pour éviter le lag au premier clic
-  ensureMpvRunning().catch(console.error);
-  
-  const port = process.env.PORT || 4000;
-  server.listen(port, () => {
-    console.log(`
-    🎵 MUSIC BOT SERVER READY
-    🚀 Port: ${port}
-    🌐 Mode: ${process.env.NODE_ENV || 'development'}
-    `);
-  });
+    await setupSpotify();
+
+    // Vérification et Configuration Auto
+    const ready = await ensureVoicemeeterReady();
+    
+    if (!ready) {
+        console.error("VoiceMeeter n'est pas installé.");
+        // Envoyer le toast au frontend ici...
+    } else {
+        // Continuer le lancement de MPV et du serveur
+        ensureMpvRunning().catch(console.error);
+        server.listen(4000, () => console.log("🚀 Server Ready"));
+    }
 }
 
 bootstrap();

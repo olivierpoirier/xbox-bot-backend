@@ -4,7 +4,7 @@ export const APP_CONFIG = {
 
 export const MPV_CONFIG = {
   bin: (process.env.MPV_BIN || "mpv").trim(),
-  audioDevice: (process.env.MPV_AUDIO_DEVICE || "").trim(),
+  audioDevice: ("wasapi/{422c5f03-d063-4b65-b529-c54272b9bac9}").trim(),
   
   baseArgs: [
     "--video=no",

@@ -29,6 +29,7 @@ const io = new IOServer(server, {
   cors: { origin: "*" },
   perMessageDeflate: false 
 });
+let isVoicemeeterMissing = false;
 
 app.use(express.static(path.resolve(process.cwd(), "../frontend/dist")));
 
@@ -100,6 +101,10 @@ app.get('/health', (req, res) => {
 /* --- LOGIQUE SOCKET --- */
 
 io.on("connection", (socket) => {
+  if (isVoicemeeterMissing) {
+    socket.emit("error_system", "VoiceMeeter Banana n'est pas installé sur le serveur. Le bot ne pourra pas diffuser de son.");
+  }
+
   // Envoi immédiat de l'état à la connexion
   broadcast();
 
@@ -272,20 +277,19 @@ io.on("connection", (socket) => {
   });
 });
 
+
+
 async function bootstrap() {
     await setupSpotify();
 
-    // Vérification et Configuration Auto
     const ready = await ensureVoicemeeterReady();
     
     if (!ready) {
-        console.error("VoiceMeeter n'est pas installé.");
-        // Envoyer le toast au frontend ici...
+        isVoicemeeterMissing = true;
+        console.error("❌ [System] VoiceMeeter Banana n'est pas détecté.");
     } else {
-        // Continuer le lancement de MPV et du serveur
         ensureMpvRunning().catch(console.error);
         server.listen(4000, () => console.log("🚀 Server Ready"));
     }
 }
-
 bootstrap();

@@ -11,6 +11,7 @@ import useLiveQueue from "./hooks/useLiveQueue";
 import { pickUrlLike } from "./lib/api";
 import { type ThemeName, type ThemeMode, THEME_ORDER, THEMES_SWATCH } from "./lib/themes";
 import type { Now, QueueItem, Control } from "./types";
+import SystemAlert from "./components/SystemAlert";
 
 type Command =
   | "pause"
@@ -36,7 +37,19 @@ export default function App() {
     catch (err) { console.warn("Impossible de lire xmb_theme", err); return "classic"; }
   });
 
-  const { state, toast, setToast, play, command, busy, clear, setBusy, reorderQueue, removeQueueItem } = useLiveQueue();
+  const { 
+    state, 
+    toast, 
+    setToast, 
+    systemError, // Récupéré ici
+    play, 
+    command, 
+    busy, 
+    clear, 
+    setBusy, 
+    reorderQueue, 
+    removeQueueItem 
+  } = useLiveQueue();
 
   // --- LocalStorage ---
   useEffect(() => { try { localStorage.setItem("xmb_theme_mode", mode); } catch (err) { console.warn(err); } }, [mode]);
@@ -96,6 +109,8 @@ export default function App() {
 
   return (
     <div className={`min-h-screen bg-bg text-ink ${rootThemeClass} pb-28 relative`}>
+
+      <SystemAlert isOpen={systemError} rainbow={rainbow} />
       {/* Header */}
       <AppHeader theme={theme} rainbow={rainbow} onPickRainbow={pickRainbow} onNextColor={pickNextColor} />
 

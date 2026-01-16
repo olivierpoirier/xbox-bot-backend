@@ -17,11 +17,12 @@ export default function useLiveQueue() {
   });
 
   const [toast, setToast] = useState("");
+  const [systemError, setSystemError] = useState(false); // État pour VoiceMeeter manquant
   const [busy, setBusyState] = useState<BusyState>(null);
   const socketRef = useRef<Socket | null>(null);
   const busyTimerRef = useRef<number | null>(null);
 
-  // Tick pour forcer le rafraîchissement du timer de lecture
+  // Tick pour forcer le rafraîchissement du timer de lecture (position fluide)
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), 500);
@@ -48,27 +49,36 @@ export default function useLiveQueue() {
     const s = io(SERVER_URL || undefined, { transports: ["websocket"] });
     socketRef.current = s;
 
+    // Mise à jour de l'état global
     s.on("state", (payload: QueueResponse) => {
       setState(payload);
       clearBusy();
     });
 
+    // Réception de l'alerte critique VoiceMeeter
+    s.on("error_system", () => {
+      setSystemError(true);
+    });
+
+    // Réception des notifications éphémères
     s.on("toast", (msg: string) => {
       setToast(msg);
-      // Force la suppression du toast côté état après 4.5s 
-      // (un peu après l'animation de 4s du composant)
       setTimeout(() => setToast(""), 4500);
     });
+
     s.on("connect", () => {
       setToast("🔗 Connecté au serveur");
       setTimeout(() => setToast(""), 4500);
     });
+
     s.on("disconnect", () => {
       setToast("⚡ Connexion perdue");
       clearBusy();
     });
 
-    return () => { s.close(); };
+    return () => { 
+      s.close(); 
+    };
   }, [clearBusy]);
 
   const emitSafe = useCallback((event: string, payload?: unknown, busyKey?: BusyState) => {
@@ -90,10 +100,12 @@ export default function useLiveQueue() {
     state, 
     toast, 
     setToast, 
+    systemError,      // Expose l'état pour le composant SystemAlert
+    setSystemError,   // Permet de fermer l'alerte manuellement si besoin
     play, 
     command, 
     busy, 
-    setBusy, // Maintenant disponible pour App.tsx
+    setBusy, 
     clear, 
     reorderQueue, 
     removeQueueItem 

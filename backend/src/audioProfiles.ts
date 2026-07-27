@@ -17,9 +17,9 @@ export const AUDIO_PROFILES: Record<AudioProfileName, AudioProfileConfig> = {
   },
   xbox: {
     label: "Xbox",
-    volume: 84,
+    volume: 88,
     filters:
-      "lavfi=[highpass=f=45,lowpass=f=16000,equalizer=f=250:t=q:w=1.0:g=-1.0,equalizer=f=3500:t=q:w=1.4:g=-1.5,acompressor=threshold=0.22:ratio=1.8:attack=25:release=180:makeup=1.5,alimiter=level_in=1:level_out=0.94:limit=0.92:attack=5:release=80]",
+      "lavfi=[pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1,highpass=f=35,lowpass=f=17000,equalizer=f=250:t=q:w=1.0:g=0.8,equalizer=f=3500:t=q:w=1.4:g=-0.8,acompressor=threshold=0.28:ratio=1.45:attack=20:release=160:makeup=1.3,alimiter=level_in=1:level_out=0.95:limit=0.93:attack=5:release=80]",
   },
 };
 

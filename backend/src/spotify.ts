@@ -6,6 +6,7 @@ type SpotifyTokenCache = {
 } | null;
 
 let tokenCache: SpotifyTokenCache = null;
+let skipRefreshToken = false;
 
 type SpotifyImage = {
   url: string;
@@ -44,11 +45,13 @@ type SpotifyAlbumTracksResponse = {
 
 export class SpotifyResolverError extends Error {
   code: string;
+  status?: number;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, status?: number) {
     super(message);
     this.name = "SpotifyResolverError";
     this.code = code;
+    this.status = status;
   }
 }
 
@@ -87,9 +90,18 @@ async function refreshSpotifyAccessToken(): Promise<string> {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      const grantType = params.get("grant_type");
+      const refreshTokenRevoked =
+        grantType === "refresh_token" &&
+        res.status === 400 &&
+        /invalid_grant|revoked|refresh token/i.test(text);
+
       throw new SpotifyResolverError(
-        "SPOTIFY_TOKEN_REQUEST_FAILED",
-        `Spotify token request failed: ${res.status} ${text}`
+        refreshTokenRevoked
+          ? "SPOTIFY_REFRESH_TOKEN_REVOKED"
+          : "SPOTIFY_TOKEN_REQUEST_FAILED",
+        `Spotify token request failed: ${res.status} ${text}`,
+        res.status
       );
     }
 
@@ -101,7 +113,7 @@ async function refreshSpotifyAccessToken(): Promise<string> {
 
   let data: { access_token: string; expires_in: number };
 
-  if (refreshToken) {
+  if (refreshToken && !skipRefreshToken) {
     try {
       data = await requestToken(
         new URLSearchParams({
@@ -112,7 +124,21 @@ async function refreshSpotifyAccessToken(): Promise<string> {
     } catch (error) {
       // Public tracks, albums and public playlists work with client credentials.
       // This keeps normal Spotify links working when an old refresh token expires.
-      console.warn("[spotify] refresh token failed; trying client credentials", error);
+      if (
+        error instanceof SpotifyResolverError &&
+        error.code === "SPOTIFY_REFRESH_TOKEN_REVOKED"
+      ) {
+        skipRefreshToken = true;
+        console.warn(
+          "[spotify] SPOTIFY_REFRESH_TOKEN is revoked; using client credentials. Remove it from .env or generate a new token only if you need private Spotify data."
+        );
+      } else {
+        console.warn(
+          "[spotify] refresh token failed; trying client credentials",
+          error
+        );
+      }
+
       data = await requestToken(
         new URLSearchParams({ grant_type: "client_credentials" })
       );

@@ -133,7 +133,7 @@ Cette séparation est importante: le mode local doit continuer à servir `fronte
 | `YTDLP_COOKIES_PATH` | Fichier cookies pour aider la résolution YouTube. |
 | `SPOTIFY_CLIENT_ID` | Identifiant Spotify, si les liens Spotify sont utilisés. |
 | `SPOTIFY_CLIENT_SECRET` | Secret Spotify. |
-| `SPOTIFY_REFRESH_TOKEN` | Refresh token Spotify. |
+| `SPOTIFY_REFRESH_TOKEN` | Optionnel. Laisse vide pour les liens publics; regenere-le seulement si tu veux acceder a des donnees Spotify privees. |
 
 ## Notes de développement
 

@@ -314,6 +314,74 @@ function mapSingleDataToResolvedItem(data: any, url: string): ResolvedItem {
   };
 }
 
+function mapYoutubeSearchResult(data: any, query: string): ResolvedItem | null {
+  const raw =
+    data?.url ||
+    data?.webpage_url ||
+    data?.original_url ||
+    data?.id ||
+    null;
+
+  let url: string | null = null;
+
+  if (typeof raw === "string" && /^https?:\/\//i.test(raw)) {
+    url = raw;
+  } else if (typeof raw === "string" && /^[a-zA-Z0-9_-]{11}$/.test(raw)) {
+    url = `https://www.youtube.com/watch?v=${raw}`;
+  }
+
+  if (!url) return null;
+
+  const normalized = normalizeUrl(url);
+  const title = data?.title || query;
+
+  return {
+    url: normalized,
+    title,
+    thumb: pickBestThumbnail(data, title, normalized),
+    durationSec: Number(data?.durationInSec) || Number(data?.duration) || 0,
+  };
+}
+
+export async function searchYoutubeVideo(
+  query: string
+): Promise<ResolvedItem | null> {
+  const trimmed = query.trim();
+  if (!trimmed) return null;
+
+  try {
+    const results = await play.search(trimmed, {
+      limit: 1,
+      source: { youtube: "video" },
+    });
+
+    const item = mapYoutubeSearchResult(results[0], trimmed);
+    if (item) return item;
+  } catch (err) {
+    console.warn("[youtube search] play-dl failed; trying yt-dlp", err);
+  }
+
+  const searchUrl = `ytsearch1:${trimmed}`;
+
+  try {
+    const json = await runYtDlp(
+      searchUrl,
+      ["--dump-single-json", "--no-playlist", searchUrl],
+      { useCookies: true }
+    );
+
+    const data = JSON.parse(json);
+    const first = Array.isArray(data?.entries) ? data.entries[0] : data;
+    const item = mapYoutubeSearchResult(first, trimmed);
+
+    if (item) return item;
+  } catch (err) {
+    console.warn("[youtube search] yt-dlp failed", err);
+  }
+
+  return null;
+}
+
 async function resolveSoundCloudItems(
   normalized: string
 ): Promise<ResolvedItem[] | null> {

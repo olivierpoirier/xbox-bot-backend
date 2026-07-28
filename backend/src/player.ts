@@ -1,4 +1,3 @@
-import play from "play-dl";
 import {
   state,
   playing,
@@ -22,6 +21,7 @@ import {
   getPlayableSource,
   normalizeUrl,
   resolvePlayable,
+  searchYoutubeVideo,
   type PlayableSource,
 } from "./ytdlp.js";
 import { MPV_CONFIG, PLAYER_CONFIG } from "./config.js";
@@ -388,18 +388,16 @@ async function resolveSpotifyItem(item: QueueItem): Promise<boolean> {
   try {
     const query = item.url.replace("provider:spotify:", "").trim();
 
-    const results = await play.search(query, {
-      limit: 1,
-      source: { youtube: "video" },
-    });
+    const result = await searchYoutubeVideo(query);
 
-    if (!results.length || !results[0]?.url) {
+    if (!result?.url) {
       throw new Error("No YouTube result found");
     }
 
-    item.url = results[0].url;
-    item.title = item.title || results[0].title || query;
-    item.thumb = item.thumb || results[0].thumbnails?.[0]?.url || null;
+    item.url = result.url;
+    item.title = item.title || result.title || query;
+    item.thumb = item.thumb || result.thumb || null;
+    item.durationSec = item.durationSec || result.durationSec || 0;
 
     return true;
   } catch (err) {

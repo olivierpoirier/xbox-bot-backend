@@ -30,6 +30,7 @@ import {
   resolveUrlToPlayableItems,
   probeSingle,
   normalizeUrl,
+  searchYoutubeVideo,
 } from "./ytdlp.js";
 import {
   isPlaylistUrl,
@@ -146,20 +147,7 @@ async function resolveSearchTextToVideoUrl(query: string): Promise<{
   durationSec?: number;
 } | null> {
   try {
-    const results = await play.search(query, {
-      limit: 1,
-      source: { youtube: "video" },
-    });
-
-    const first = results[0];
-    if (!first?.url) return null;
-
-    return {
-      url: first.url,
-      title: first.title || query,
-      thumb: first.thumbnails?.[0]?.url || null,
-      durationSec: (first as any).durationInSec || 0,
-    };
+    return searchYoutubeVideo(query);
   } catch (err) {
     console.error("[search text resolve failed]", err);
     return null;

@@ -225,6 +225,15 @@
   filter: saturate(1.08);
 }
 
+/* A nested hue animation produces the same colors as its animated parent,
+   but creates another full compositor layer. Keep the visual effect while
+   avoiding dozens of duplicate GPU layers in rainbow mode. */
+:is(.rainbow-cycle, .rainbow-cycle-slow, .rainbow-cycle-fast, .rainbow-cycle-soft)
+  :is(.rainbow-cycle, .rainbow-cycle-slow, .rainbow-cycle-fast, .rainbow-cycle-soft) {
+  animation: none;
+  will-change: auto;
+}
+
 .rainbow-all,
 .rainbow-all * {
   animation: hue 10s linear infinite;

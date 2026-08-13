@@ -46,22 +46,21 @@ function useSocketQueue() {
   const socketRef = useRef<Socket | null>(null);
   const busyTimerRef = useRef<number | null>(null);
 
-  const [, setTick] = useState(0);
-
   useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), 500);
-    return () => clearInterval(id);
-  }, []);
+    if (pendingItems.length === 0) return;
 
-  useEffect(() => {
     const id = window.setInterval(() => {
-      setPendingItems((prev) =>
-        prev.filter((item) => Date.now() - item.createdAt < PENDING_MAX_AGE_MS)
-      );
+      setPendingItems((prev) => {
+        const next = prev.filter(
+          (item) => Date.now() - item.createdAt < PENDING_MAX_AGE_MS
+        );
+
+        return next.length === prev.length ? prev : next;
+      });
     }, 2000);
 
     return () => clearInterval(id);
-  }, []);
+  }, [pendingItems.length]);
 
   const clearBusy = useCallback(() => {
     setBusyState(null);

@@ -60,10 +60,8 @@ export default function PlayerBar({
   const [dragValue, setDragValue] = useState(0);
 
   const lastSeekTime = useRef<number>(0);
-  const requestRef = useRef<number | null>(null);
-
   useEffect(() => {
-    const updateTick = () => {
+    const updatePosition = () => {
       const nowMs = Date.now();
 
       if (!isDragging && nowMs - lastSeekTime.current > 800) {
@@ -76,15 +74,15 @@ export default function PlayerBar({
           setLocalPos(elapsed);
         }
       }
-
-      requestRef.current = requestAnimationFrame(updateTick);
     };
 
-    requestRef.current = requestAnimationFrame(updateTick);
+    updatePosition();
 
-    return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-    };
+    if (!now || paused || now.isBuffering || isDragging) return;
+
+    const interval = window.setInterval(updatePosition, 500);
+
+    return () => window.clearInterval(interval);
   }, [now, paused, isDragging]);
 
   const handleSeekEnd = (value: number) => {
@@ -151,6 +149,7 @@ export default function PlayerBar({
                     : "h-full bg-[linear-gradient(90deg,var(--c1),var(--c2))]"
                 }
                 style={{ width: `${progressPct}%` }}
+                transition={{ duration: 0.5, ease: "linear" }}
               />
             </div>
 

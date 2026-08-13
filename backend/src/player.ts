@@ -298,9 +298,11 @@ async function attachListener(
       const now = state.now;
       if (!now) return;
 
+      const wasBuffering = Boolean(now.isBuffering);
+      let clientClockChanged = wasBuffering;
       now.positionOffsetSec = ev.data;
 
-      if (now.isBuffering) {
+      if (wasBuffering) {
         now.isBuffering = false;
       }
 
@@ -312,10 +314,14 @@ async function attachListener(
 
         if (drift > 1 || !now.startedAt) {
           now.startedAt = Date.now() - ev.data * 1000;
+          clientClockChanged = true;
         }
       }
 
-      onStateChange();
+      // MPV can report time-pos many times per second. The clients derive the
+      // smooth position locally from startedAt. Only send the complete state
+      // when buffering ends or that shared clock actually needs correction.
+      if (clientClockChanged) onStateChange();
       return;
     }
 

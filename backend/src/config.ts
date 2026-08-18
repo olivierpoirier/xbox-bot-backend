@@ -142,7 +142,7 @@ export const MPV_CONFIG = {
     "--gapless-audio=yes",
     "--audio-pitch-correction=yes",
     "--volume=30",
-    "--volume-max=30",
+    "--volume-max=100",
 
     // Robustesse
     `--audio-buffer=${envOrDefault("MPV_AUDIO_BUFFER_SEC", "2.0")}`,

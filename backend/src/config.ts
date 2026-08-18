@@ -141,7 +141,8 @@ export const MPV_CONFIG = {
     "--ad-lavc-ac3drc=0",
     "--gapless-audio=yes",
     "--audio-pitch-correction=yes",
-    "--volume-max=100",
+    "--volume=30",
+    "--volume-max=30",
 
     // Robustesse
     `--audio-buffer=${envOrDefault("MPV_AUDIO_BUFFER_SEC", "2.0")}`,

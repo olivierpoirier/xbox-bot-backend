@@ -1,5 +1,13 @@
 import type { ClipboardEvent, KeyboardEvent } from "react";
-import { ClipboardPaste, PlusCircle, User, Link2 } from "lucide-react";
+import {
+  ClipboardPaste,
+  Link2,
+  Music2,
+  PlusCircle,
+  Search,
+  User,
+  Youtube,
+} from "lucide-react";
 import { pickUrlLike } from "../lib/api";
 import type { ThemeName } from "../lib/themes";
 
@@ -31,6 +39,7 @@ export default function FormInputs({
 }: Props) {
   const isAdventurer = !rainbow && theme === "adventurer";
   const isPremium = !rainbow && theme === "premium";
+  const trimmedUrl = url.trim();
 
   const formCls = `relative transition-all duration-300 shadow-soft ${
     isAdventurer ? "organic-panel" : "rounded-xl bg-panel"
@@ -59,6 +68,65 @@ export default function FormInputs({
         rainbow ? "rainbow-cycle" : ""
       }`;
 
+  const sourceHint = (() => {
+    const candidate = pickUrlLike(trimmedUrl);
+    const lowered = candidate.toLowerCase();
+
+    if (!trimmedUrl) {
+      return {
+        label: "En attente",
+        detail: "Colle un lien ou écris un titre.",
+        icon: Link2,
+        tone: "text-white/45",
+      };
+    }
+
+    if (lowered.includes("open.spotify.com") || lowered.startsWith("spotify:")) {
+      return {
+        label: "Spotify",
+        detail: "Le backend trouvera le meilleur audio.",
+        icon: Music2,
+        tone: "text-emerald-200",
+      };
+    }
+
+    if (lowered.includes("youtube.com") || lowered.includes("youtu.be")) {
+      return {
+        label: "YouTube",
+        detail: "Lecture directe optimisée audio.",
+        icon: Youtube,
+        tone: "text-red-200",
+      };
+    }
+
+    if (lowered.includes("soundcloud.com") || lowered.includes("snd.sc")) {
+      return {
+        label: "SoundCloud",
+        detail: "Fallback YouTube si le direct bloque.",
+        icon: Music2,
+        tone: "text-orange-200",
+      };
+    }
+
+    if (/^https?:\/\//i.test(candidate)) {
+      return {
+        label: "Lien web",
+        detail: "Le serveur va tenter de l'analyser.",
+        icon: Link2,
+        tone: "text-sky-200",
+      };
+    }
+
+    return {
+      label: "Recherche",
+      detail: "Recherche texte côté serveur.",
+      icon: Search,
+      tone: "text-violet-200",
+    };
+  })();
+
+  const SourceHintIcon = sourceHint.icon;
+
   const handlePasteUrl = (e: ClipboardEvent<HTMLInputElement>) => {
     const text = e.clipboardData?.getData("text") || "";
     if (text) {
@@ -70,13 +138,18 @@ export default function FormInputs({
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      if (!busy && url.trim() && name.trim()) {
+      if (!busy && trimmedUrl) {
         addToQueue();
       }
     }
   };
 
-  const isButtonDisabled = !!busy || !url.trim() || !name.trim();
+  const isButtonDisabled = !!busy || !trimmedUrl;
+  const submitLabel = busy === "play"
+    ? "Syncing..."
+    : trimmedUrl
+    ? "Transmit"
+    : "Signal requis";
 
   return (
     <div className={`grid gap-4 md:gap-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[2fr,1.2fr,auto] mb-8 p-1 ${rainbow ? "rainbow-cycle" : ""}`}>
@@ -89,7 +162,7 @@ export default function FormInputs({
         <div className={formCls}>
           <input
             className={inputCls}
-            placeholder="https://youtube.com/watch?v=..."
+            placeholder="Spotify, YouTube, SoundCloud ou recherche"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             onPaste={handlePasteUrl}
@@ -98,10 +171,24 @@ export default function FormInputs({
             autoCorrect="off"
             autoCapitalize="none"
             spellCheck={false}
+            aria-describedby="source-status"
           />
           {!isAdventurer && (
             <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] rounded-xl" />
           )}
+        </div>
+
+        <div
+          id="source-status"
+          className={`mt-2 min-h-[20px] flex items-center gap-2 text-xs ${
+            isAdventurer ? "text-[#e7efd9]/65" : "text-white/50"
+          } ${rainbow ? "rainbow-cycle" : ""}`}
+        >
+          <span className={`inline-flex items-center gap-1.5 ${sourceHint.tone}`}>
+            <SourceHintIcon className="w-3.5 h-3.5" />
+            <span className="font-medium">{sourceHint.label}</span>
+          </span>
+          <span className="truncate">{sourceHint.detail}</span>
         </div>
 
         <button
@@ -124,15 +211,25 @@ export default function FormInputs({
         <div className={formCls}>
           <input
             className={inputCls}
-            placeholder="Guest_01"
+            placeholder="Guest_01 optionnel"
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={handleKeyDown}
             autoComplete="nickname"
+            aria-describedby="operator-status"
           />
           {!isAdventurer && (
             <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] rounded-xl" />
           )}
+        </div>
+
+        <div
+          id="operator-status"
+          className={`mt-2 min-h-[20px] text-xs ${
+            isAdventurer ? "text-[#e7efd9]/65" : "text-white/50"
+          } ${rainbow ? "rainbow-cycle" : ""}`}
+        >
+          {name.trim() ? `Ajouté par ${name.trim()}` : "Sans nom, ce sera ajouté par anon."}
         </div>
 
         <button
@@ -150,6 +247,7 @@ export default function FormInputs({
         <button
           onClick={addToQueue}
           disabled={isButtonDisabled}
+          title={isButtonDisabled ? submitLabel : "Ajouter à la file"}
           type="button"
           className={`
             relative h-[48px] px-8 font-black uppercase tracking-tight transition-all duration-300
@@ -168,12 +266,12 @@ export default function FormInputs({
           {busy === "play" ? (
             <>
               <span className="w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
-              <span>Syncing...</span>
+              <span>{submitLabel}</span>
             </>
           ) : (
             <>
               <PlusCircle size={18} />
-              <span>Transmit</span>
+              <span>{submitLabel}</span>
             </>
           )}
 

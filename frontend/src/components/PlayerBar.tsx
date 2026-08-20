@@ -161,6 +161,7 @@ export default function PlayerBar({
                     : "rounded-xl border border-white/10"
                 } ${rainbow ? "rainbow-cycle" : ""}`}
                 onClick={() => setExpanded(true)}
+                aria-label="Ouvrir le lecteur"
                 type="button"
               >
                 {now.thumb ? (
@@ -190,6 +191,7 @@ export default function PlayerBar({
               <button
                 className={`flex-1 min-w-0 text-left ${rainbow ? "rainbow-cycle" : ""}`}
                 onClick={() => setExpanded(true)}
+                aria-label="Ouvrir les détails de lecture"
                 type="button"
               >
                 <div className="text-[10px] uppercase tracking-[0.18em] opacity-50 mb-0.5">
@@ -211,6 +213,7 @@ export default function PlayerBar({
                   className={`p-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all text-[var(--c1)] disabled:opacity-20 ${
                     rainbow ? "rainbow-cycle" : ""
                   }`}
+                  aria-label={paused ? "Reprendre" : "Pause"}
                   type="button"
                 >
                   {isBuffering && !paused ? (
@@ -227,6 +230,7 @@ export default function PlayerBar({
                   className={`p-3 text-white/60 hover:text-white transition-colors ${
                     rainbow ? "rainbow-cycle" : ""
                   }`}
+                  aria-label="Passer"
                   type="button"
                 >
                   <SkipForward size={20} fill="currentColor" />
@@ -287,6 +291,7 @@ export default function PlayerBar({
                         className={`p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition ${
                           rainbow ? "rainbow-cycle" : ""
                         }`}
+                        aria-label="Fermer le lecteur"
                         type="button"
                       >
                         <X size={22} />
@@ -358,6 +363,7 @@ export default function PlayerBar({
                             />
 
                             <input
+                              aria-label="Position de lecture"
                               type="range"
                               min={0}
                               max={Math.max(1, Math.floor(dur))}
@@ -384,6 +390,7 @@ export default function PlayerBar({
                               className={`h-14 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/75 transition flex items-center justify-center ${
                                 rainbow ? "rainbow-cycle" : ""
                               }`}
+                              aria-label="Reculer de 15 secondes"
                               type="button"
                             >
                               <RotateCcw size={22} />
@@ -394,6 +401,7 @@ export default function PlayerBar({
                               className={`h-14 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/75 transition flex items-center justify-center ${
                                 rainbow ? "rainbow-cycle" : ""
                               }`}
+                              aria-label="Piste précédente"
                               type="button"
                             >
                               <SkipBack size={22} fill="currentColor" />
@@ -404,6 +412,7 @@ export default function PlayerBar({
                               className={`h-16 rounded-[1.25rem] border border-white/10 bg-[linear-gradient(135deg,color-mix(in_oklab,var(--c1)_22%,transparent),color-mix(in_oklab,var(--c2)_18%,transparent))] hover:brightness-110 text-white transition flex items-center justify-center ${
                                 rainbow ? "rainbow-cycle" : ""
                               }`}
+                              aria-label={paused ? "Reprendre" : "Pause"}
                               type="button"
                             >
                               {isBuffering && !paused ? (
@@ -420,6 +429,7 @@ export default function PlayerBar({
                               className={`h-14 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/75 transition flex items-center justify-center ${
                                 rainbow ? "rainbow-cycle" : ""
                               }`}
+                              aria-label="Passer"
                               type="button"
                             >
                               <SkipForward size={22} fill="currentColor" />
@@ -430,6 +440,7 @@ export default function PlayerBar({
                               className={`h-14 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 text-white/75 transition flex items-center justify-center ${
                                 rainbow ? "rainbow-cycle" : ""
                               }`}
+                              aria-label="Avancer de 15 secondes"
                               type="button"
                             >
                               <RotateCw size={22} />
@@ -455,6 +466,7 @@ export default function PlayerBar({
                                     ? "border-[var(--c1)] bg-[color-mix(in_oklab,var(--c1)_15%,transparent)] text-[var(--c1)]"
                                     : "border-white/10 bg-white/5 text-white/50 hover:text-white"
                                 } ${rainbow ? "rainbow-cycle" : ""}`}
+                                aria-label="Mode aléatoire"
                                 type="button"
                               >
                                 <span className="inline-flex items-center gap-2">
@@ -470,6 +482,7 @@ export default function PlayerBar({
                                     ? "border-[var(--c1)] bg-[color-mix(in_oklab,var(--c1)_15%,transparent)] text-[var(--c1)]"
                                     : "border-white/10 bg-white/5 text-white/50 hover:text-white"
                                 } ${rainbow ? "rainbow-cycle" : ""}`}
+                                aria-label="Répéter"
                                 type="button"
                               >
                                 <span className="inline-flex items-center gap-2">
@@ -490,6 +503,7 @@ export default function PlayerBar({
                                     ? "border-emerald-400 bg-emerald-400/15 text-emerald-200"
                                     : "border-white/10 bg-white/5 text-white/50 hover:text-white"
                                 } ${rainbow ? "rainbow-cycle" : ""}`}
+                                aria-label="Profil audio"
                                 type="button"
                                 title="Optimise le son pour le chemin micro / Xbox party"
                               >

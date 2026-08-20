@@ -69,11 +69,21 @@ Last updated: 2026-08-20
 - Backend build: OK when run outside the sandbox, because `backend/dist` denies writes inside the sandbox.
 - Web UI Spotify playback path: OK in local browser test.
 - Backend provider/search cache targeted runtime test: OK.
-- Frontend TypeScript/build/lint were previously OK before backend-only work.
+- Frontend TypeScript/build/lint: OK.
+- Frontend browser UI test: OK for source input, optional operator input, paste buttons, submit, section collapse/open, queue controls, player controls, seek slider, theme header controls, and desktop theme dock.
+- Frontend CSS build warning about `align-items: end` was fixed by using `flex-end`.
+
+## Frontend Notes
+
+- `Operator ID` is optional; empty names submit as `anon`.
+- Source input now shows detected source state for Spotify, YouTube, SoundCloud, generic links, and text search.
+- Submit button now explains the disabled state with `Signal requis`.
+- Player icon controls have accessible labels so browser tests can target them reliably.
+- Supported links help text encoding was corrected.
 
 ## Remaining Work
 
 - Test Discord capture quality while in a real Discord voice channel.
 - Confirm Discord input is listening to the intended VoiceMeeter virtual output/source.
 - Consider a faster official SoundCloud streaming path if an API token/client setup becomes available; otherwise keep the current fast metadata plus cached YouTube fallback behavior.
-- Frontend still needs to be updated/reviewed after backend work.
+- Consider persistent cache if Spotify/SoundCloud matches should survive backend restarts.

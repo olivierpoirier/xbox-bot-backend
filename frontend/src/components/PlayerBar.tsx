@@ -189,20 +189,25 @@ export default function PlayerBar({
               </button>
 
               <button
-                className={`flex-1 min-w-0 text-left ${rainbow ? "rainbow-cycle" : ""}`}
+                className={`group/title flex-1 min-w-0 text-left ${rainbow ? "rainbow-cycle" : ""}`}
                 onClick={() => setExpanded(true)}
                 aria-label="Ouvrir les détails de lecture"
                 type="button"
               >
-                <div className="text-[10px] uppercase tracking-[0.18em] opacity-50 mb-0.5">
-                  {subtitle}
-                </div>
-                <div
-                  className={`text-sm font-semibold truncate ${
-                    isBuffering && !hasRealTitle ? "opacity-50" : "text-white/92"
-                  }`}
-                >
-                  {displayTitle}
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] uppercase tracking-[0.18em] opacity-50 mb-0.5">
+                      {subtitle}
+                    </div>
+                    <div
+                      className={`text-sm font-semibold truncate ${
+                        isBuffering && !hasRealTitle ? "opacity-50" : "text-white/92"
+                      }`}
+                    >
+                      {displayTitle}
+                    </div>
+                  </div>
+                  <ChevronUp className="w-4 h-4 shrink-0 text-white/35 transition group-hover/title:text-white/70" />
                 </div>
               </button>
 

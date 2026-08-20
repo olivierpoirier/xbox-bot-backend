@@ -15,7 +15,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Trash2, GripVertical, ListMusic, Shuffle } from "lucide-react";
+import { Trash2, GripVertical, ListMusic, Shuffle, SkipForward } from "lucide-react";
 
 import type { QueueItem } from "../types";
 import type { ThemeName } from "../lib/themes";
@@ -112,8 +112,6 @@ function SortableQueueItem({
           {...attributes}
           {...listeners}
           disabled={disabled || isPending}
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
           className={cn(
             "cursor-grab active:cursor-grabbing text-muted hover:text-white shrink-0 touch-none",
             rainbow && "rainbow-cycle"
@@ -310,24 +308,27 @@ export default function QueueList({
             <button
               onClick={onSkipGroup}
               className={cn(
-                "text-xs px-3 py-2 rounded-lg themed-secondary-button",
+                "text-xs px-3 py-2 rounded-lg themed-secondary-button inline-flex items-center gap-2",
                 rainbow && "rainbow-cycle"
               )}
-              title="Passer le groupe"
+              title="Passer le groupe ou la playlist en cours; s'il n'y a pas de groupe, passe le morceau courant"
+              aria-label="Passer le groupe en cours"
               type="button"
             >
-              Skip
+              <SkipForward className="w-3.5 h-3.5" />
+              Passer groupe
             </button>
 
             <button
               onClick={onClear}
               className={cn(
-                "text-xs px-3 py-2 rounded-lg themed-danger-button",
+                "text-xs px-3 py-2 rounded-lg themed-danger-button inline-flex items-center gap-2",
                 rainbow && "rainbow-cycle"
               )}
               title="Vider la file"
               type="button"
             >
+              <Trash2 className="w-3.5 h-3.5" />
               Vider
             </button>
           </div>

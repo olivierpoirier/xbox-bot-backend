@@ -20,6 +20,7 @@ import {
 import {
   buildSoundCloudYoutubeQuery,
   getPlayableSource,
+  invalidatePlayableSource,
   normalizeUrl,
   probeSingle,
   resolvePlayable,
@@ -32,6 +33,12 @@ import type { AudioProfileName } from "./audioProfiles.js";
 import { isSoundCloudUrl } from "./platforms/index.js";
 import { performance } from "node:perf_hooks";
 import { recordBackendMetric } from "./metrics.js";
+import {
+  deleteProviderMatch,
+  getProviderMatch,
+  setProviderMatch,
+  type ProviderMatch,
+} from "./providerCache.js";
 
 let globalMpvHandle: MpvHandle | null = null;
 let isLooping = false;
@@ -49,51 +56,14 @@ type PreloadingSource = {
   task: Promise<PlayableSource | null>;
 };
 
-let preloaded = new Map<string, PreloadedSource>();
-let preloading = new Map<string, PreloadingSource>();
+type ResolvedPlaybackSource = {
+  source: PlayableSource;
+  fromPreload: boolean;
+};
+
+const preloaded = new Map<string, PreloadedSource>();
+const preloading = new Map<string, PreloadingSource>();
 let preloadWorkerRunning = false;
-
-type ProviderMatch = {
-  url: string;
-  title?: string;
-  thumb?: string | null;
-  durationSec?: number;
-};
-
-type ProviderMatchCacheVal = {
-  value: ProviderMatch;
-  exp: number;
-};
-
-const providerMatchCache = new Map<string, ProviderMatchCacheVal>();
-
-function getProviderMatch(key: string): ProviderMatch | null {
-  const cached = providerMatchCache.get(key);
-  if (!cached) return null;
-
-  if (cached.exp < Date.now()) {
-    providerMatchCache.delete(key);
-    return null;
-  }
-
-  return { ...cached.value };
-}
-
-function setProviderMatch(key: string, value: ProviderMatch): void {
-  if (providerMatchCache.size >= PLAYER_CONFIG.providerMatchCacheMax) {
-    const first = providerMatchCache.keys().next();
-    if (!first.done) providerMatchCache.delete(first.value);
-  }
-
-  providerMatchCache.set(key, {
-    value: { ...value },
-    exp: Date.now() + PLAYER_CONFIG.providerMatchCacheTTLMs,
-  });
-}
-
-function deleteProviderMatch(key: string): void {
-  providerMatchCache.delete(key);
-}
 
 function normalizeProviderMatchText(value: string): string {
   return value
@@ -529,11 +499,11 @@ async function resolveSpotifyItem(item: QueueItem): Promise<boolean> {
 
 async function resolvePlaybackSource(
   item: QueueItem
-): Promise<PlayableSource | null> {
+): Promise<ResolvedPlaybackSource | null> {
   const preloadedSource = await consumePreloaded(item);
   if (preloadedSource) {
     console.log("[player] ⚡ Using preloaded audio");
-    return preloadedSource;
+    return { source: preloadedSource, fromPreload: true };
   }
 
   const normalized = normalizeUrl(item.url);
@@ -541,22 +511,60 @@ async function resolvePlaybackSource(
     item,
     normalized
   );
-  if (cachedSoundCloudSource) return cachedSoundCloudSource;
+  if (cachedSoundCloudSource) {
+    return { source: cachedSoundCloudSource, fromPreload: false };
+  }
+
+  const soundCloudFallback = await resolveSoundCloudFallbackSource(
+    item,
+    normalized
+  );
+  if (soundCloudFallback) {
+    return { source: soundCloudFallback, fromPreload: false };
+  }
 
   try {
     const resolved = await resolvePlayable(
       normalized,
       state.control.audioProfile
     );
-    if (resolved) return resolved;
+    if (resolved) return { source: resolved, fromPreload: false };
   } catch (err) {
     console.warn("[player] resolvePlayable failed, trying fallback", err);
   }
 
-  const soundCloudFallback = await resolveSoundCloudFallbackSource(item);
-  if (soundCloudFallback) return soundCloudFallback;
-
   return null;
+}
+
+async function resolvePlaybackSourceAfterFailure(
+  item: QueueItem,
+  failedSource: PlayableSource
+): Promise<ResolvedPlaybackSource | null> {
+  const normalized = normalizeUrl(item.url);
+  const skipDebugLabels = failedSource.debugLabel
+    ? [failedSource.debugLabel]
+    : [];
+
+  const resolved = await getPlayableSource(
+    normalized,
+    state.control.audioProfile,
+    {
+      bypassCache: true,
+      skipDebugLabels,
+    }
+  );
+
+  if (resolved) {
+    console.warn(
+      `[player] retrying with alternate audio source ${
+        resolved.debugLabel || "unknown"
+      }`
+    );
+    return { source: resolved, fromPreload: false };
+  }
+
+  const fallback = await resolveSoundCloudFallbackSource(item);
+  return fallback ? { source: fallback, fromPreload: false } : null;
 }
 
 async function resolveSoundCloudFallbackSource(
@@ -570,7 +578,7 @@ async function resolveSoundCloudFallbackSource(
     const query = buildSoundCloudYoutubeQuery(metadata.title?.trim(), normalizedUrl);
     if (!query || query.toLowerCase() === "soundcloud") return null;
 
-    console.warn(`[player] SoundCloud direct failed; trying YouTube for "${query}"`);
+    console.warn(`[player] SoundCloud URL; trying stable YouTube source for "${query}"`);
 
     const found = await searchYoutubeVideo(query, {
       expectedDurationSec: metadata.durationSec || item.durationSec,
@@ -703,15 +711,39 @@ export async function ensurePlayerLoop(onStateChange: () => void): Promise<void>
     nextItem.status = "playing";
     schedulePreloadWorker();
 
-    const source = await resolvePlaybackSource(nextItem);
+    const resolved = await resolvePlaybackSource(nextItem);
 
-    if (!source) {
+    if (!resolved) {
       console.error("[player] unable to resolve playable URL");
       failItemAndContinue(nextItem, onStateChange);
       return;
     }
 
-    const success = await tryPlayWith(source, nextItem, onStateChange);
+    let success = await tryPlayWith(resolved.source, nextItem, onStateChange);
+
+    if (!success) {
+      console.warn(
+        resolved.fromPreload
+          ? "[player] preloaded audio failed; resolving a fresh playable URL"
+          : "[player] audio source failed; trying an alternate playable URL"
+      );
+
+      clearPreloadForItem(nextItem.id);
+      invalidatePlayableSource(nextItem.url, state.control.audioProfile);
+      nextItem.status = "playing";
+
+      const retryResolved = await resolvePlaybackSourceAfterFailure(
+        nextItem,
+        resolved.source
+      );
+      if (retryResolved) {
+        success = await tryPlayWith(
+          retryResolved.source,
+          nextItem,
+          onStateChange
+        );
+      }
+    }
 
     if (!success) {
       failItemAndContinue(nextItem, onStateChange);

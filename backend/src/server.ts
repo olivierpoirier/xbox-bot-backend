@@ -35,8 +35,7 @@ import {
 } from "./ytdlp.js";
 import {
   isPlaylistUrl,
-  isSoundCloudSetUrl,
-  isSoundCloudShortUrl,
+  isSoundCloudUrl,
   isSpotifyUrl,
   isYoutubeSearchUrl,
 } from "./platforms/index.js";
@@ -410,13 +409,12 @@ io.on("connection", (socket) => {
 
         const spotify = isSpotifyUrl(normalized);
         const playlist = isPlaylistUrl(normalized);
-        const soundcloudExpandable =
-          isSoundCloudSetUrl(normalized) || isSoundCloudShortUrl(normalized);
+        const soundcloud = isSoundCloudUrl(normalized);
 
-        if (spotify || playlist || soundcloudExpandable) {
+        if (spotify || playlist || soundcloud) {
           socket.emit(
             "toast",
-            soundcloudExpandable && !playlist
+            soundcloud && !playlist
               ? "Analyse du lien SoundCloud..."
               : "Analyse de la playlist..."
           );

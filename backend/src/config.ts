@@ -42,6 +42,10 @@ export const APP_CONFIG = {
   isLinux: IS_LINUX,
 };
 
+const BACKEND_ROOT = fs.existsSync(path.resolve(process.cwd(), "src", "server.ts"))
+  ? process.cwd()
+  : path.resolve(process.cwd(), "backend");
+
 function findCookiesPath(): string | null {
   const explicitPath = readEnv("YTDLP_COOKIES_PATH");
   const candidates = [
@@ -177,6 +181,10 @@ export const PLAYER_CONFIG = {
   providerMatchCacheTTLMs: Math.min(
     envNumber("PLAYER_PROVIDER_MATCH_CACHE_TTL_MS", 86_400_000),
     604_800_000
+  ),
+  providerMatchCachePath: envOrDefault(
+    "PLAYER_PROVIDER_MATCH_CACHE_PATH",
+    path.resolve(BACKEND_ROOT, ".data", "provider-match-cache.json")
   ),
 };
 

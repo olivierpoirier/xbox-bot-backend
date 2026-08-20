@@ -99,7 +99,11 @@ export default function FormInputs({
       };
     }
 
-    if (lowered.includes("soundcloud.com") || lowered.includes("snd.sc")) {
+    if (
+      lowered.includes("soundcloud.com") ||
+      lowered.includes("snd.sc") ||
+      lowered.includes("soundcloud.app.goo.gl")
+    ) {
       return {
         label: "SoundCloud",
         detail: "Fallback YouTube si le direct bloque.",

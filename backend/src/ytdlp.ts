@@ -1152,6 +1152,11 @@ type PlaybackExtractionAttempt = {
   youtubePlayerClient?: string | null;
 };
 
+type PlayableSourceOptions = {
+  bypassCache?: boolean;
+  skipDebugLabels?: string[];
+};
+
 const YOUTUBE_BALANCED_QUALITY_FORMAT =
   "best[ext=mp4][height<=720]/best[ext=mp4][height<=480]/18/bestaudio/best";
 
@@ -1278,9 +1283,18 @@ function getPlayableSourceCacheKey(
   return `${normalizeAudioProfileName(audioProfile)}:${normalized}`;
 }
 
-export async function getPlayableSource(
+export function invalidatePlayableSource(
   url: string,
   audioProfile?: AudioProfileName | null
+): void {
+  const normalized = normalizeUrl(url);
+  DIRECT_CACHE.delete(getPlayableSourceCacheKey(normalized, audioProfile));
+}
+
+export async function getPlayableSource(
+  url: string,
+  audioProfile?: AudioProfileName | null,
+  options: PlayableSourceOptions = {}
 ): Promise<PlayableSource | null> {
   if (url.startsWith("provider:")) return null;
 
@@ -1296,8 +1310,9 @@ export async function getPlayableSource(
   }
 
   const cacheKey = getPlayableSourceCacheKey(normalized, audioProfile);
-  const cached = cacheGet(DIRECT_CACHE, cacheKey);
+  const cached = options.bypassCache ? undefined : cacheGet(DIRECT_CACHE, cacheKey);
   if (cached) return cached;
+  const skippedLabels = new Set(options.skipDebugLabels || []);
 
   const tryOnce = async (
     attempt: PlaybackExtractionAttempt
@@ -1342,10 +1357,9 @@ export async function getPlayableSource(
     }
   };
 
-  for (const attempt of getPlaybackExtractionAttempts(
-    normalized,
-    audioProfile
-  )) {
+  for (const attempt of getPlaybackExtractionAttempts(normalized, audioProfile)) {
+    if (skippedLabels.has(attempt.label)) continue;
+
     const source = await tryOnce(attempt);
     if (source) return source;
   }

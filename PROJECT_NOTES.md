@@ -37,6 +37,10 @@ Last updated: 2026-08-20
   - Spotify query/duration -> YouTube result
   - repeated YouTube searches -> cached result
   - SoundCloud URL -> learned YouTube fallback after direct SoundCloud fails
+- Provider matches are persisted locally in:
+  - `backend/.data/provider-match-cache.json`
+  - This file is ignored by Git through `.data`.
+  - Cache stores stable provider matches, not temporary YouTube direct audio URLs.
 
 ## Measured Backend Timings
 
@@ -61,6 +65,11 @@ Last updated: 2026-08-20
 - SoundCloud fallback query cleanup test:
   - `Stream My Track by My Artist | Listen online for free on SoundCloud`
   - becomes `My Artist - My Track`
+- Batch link resolver test:
+  - YouTube video metadata: OK
+  - Spotify track metadata through `backend/.env`: OK
+  - SoundCloud single metadata through oEmbed: OK
+  - text search to YouTube: OK
 
 ## Current Verification Status
 
@@ -72,18 +81,56 @@ Last updated: 2026-08-20
 - Frontend TypeScript/build/lint: OK.
 - Frontend browser UI test: OK for source input, optional operator input, paste buttons, submit, section collapse/open, queue controls, player controls, seek slider, theme header controls, and desktop theme dock.
 - Frontend CSS build warning about `align-items: end` was fixed by using `flex-end`.
+- Cloudflare quick tunnel smoke test on 2026-08-20:
+  - public URL used: `https://live-lot-motivation-atmosphere.trycloudflare.com`
+  - frontend loaded through Cloudflare
+  - Socket.IO connected through Cloudflare
+  - YouTube submit from the public URL started backend playback
+  - Cloudflare quick tunnels are temporary; the URL changes when the tunnel is restarted.
+- Mobile visual pass at `390x844`:
+  - no horizontal page overflow
+  - source/operator inputs stack correctly
+  - queue/history buttons stay inside the viewport
+  - mini-player remains usable with a track active
+  - only detected visual overflow was the non-interactive decorative theme sun.
+- Full UI tour on 2026-08-20:
+  - visible text/action buttons all have an icon or a clear visual affordance
+  - YouTube link submit from the UI starts playback
+  - second YouTube link and text search queue correctly
+  - queue drag/reorder works from the drag handle
+  - `Passer groupe` clears the active group in the tested playback path
+  - `Vider` clears the queue
+  - mini player pause/resume works
+  - YouTube video preview opens and closes
+  - help panel opens and displays clean French/provider text
+  - collapsed `Lecture` section reopens correctly
+- Full UI tour found and fixed a backend playback edge case:
+  - a preloaded YouTube `bestaudio` URL can be refused by MPV with HTTP 403 after a skip
+  - the player now invalidates the cached direct audio URL and retries with another extraction strategy
+  - verified fallback source: `youtube-mpv-safe-android-cookies` format `18 mp4`
 
 ## Frontend Notes
 
 - `Operator ID` is optional; empty names submit as `anon`.
 - Source input now shows detected source state for Spotify, YouTube, SoundCloud, generic links, and text search.
 - Submit button now explains the disabled state with `Signal requis`.
+- Queue button `Skip` was renamed to `Passer groupe`; it skips the current group/playlist if present, otherwise it skips the current track.
+- Queue drag/reorder bug was fixed by letting `@dnd-kit` receive the drag-handle pointer listeners.
 - Player icon controls have accessible labels so browser tests can target them reliably.
+- Queue actions `Passer groupe` and `Vider` have explicit action icons.
+- The mini player details button has a subtle chevron affordance.
 - Supported links help text encoding was corrected.
+- If MPV rejects a preloaded YouTube audio stream with 403, playback retries with a fresh alternate yt-dlp source instead of dropping the next track.
+- SoundCloud URLs now prefer the stable path:
+  - SoundCloud URL metadata/fallback match
+  - YouTube playable source
+  - alternate yt-dlp source if MPV returns 403
+  - verified with `https://soundcloud.com/forss/flickermood` through the Cloudflare URL.
+- Frontend SoundCloud detection includes short/app links such as `snd.sc`, `on.soundcloud.com`, and `soundcloud.app.goo.gl`.
 
 ## Remaining Work
 
 - Test Discord capture quality while in a real Discord voice channel.
 - Confirm Discord input is listening to the intended VoiceMeeter virtual output/source.
-- Consider a faster official SoundCloud streaming path if an API token/client setup becomes available; otherwise keep the current fast metadata plus cached YouTube fallback behavior.
-- Consider persistent cache if Spotify/SoundCloud matches should survive backend restarts.
+- For longer-term sharing, consider replacing quick `trycloudflare.com` tunnels with a named Cloudflare Tunnel so the URL is stable.
+- Consider a faster official SoundCloud streaming path if an API token/client setup becomes available; otherwise keep the current stable YouTube fallback behavior.

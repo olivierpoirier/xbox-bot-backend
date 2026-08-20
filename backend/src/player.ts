@@ -323,7 +323,8 @@ export async function ensureMpvRunning(): Promise<MpvHandle> {
 async function attachListener(
   handle: MpvHandle,
   item: QueueItem,
-  onStateChange: () => void
+  onStateChange: () => void,
+  isStartupAttemptActive: () => boolean = () => false
 ): Promise<void> {
   const attemptId = item.id;
 
@@ -351,6 +352,10 @@ async function attachListener(
       if (ev.reason === "eof") {
         handleEndOfTrack(item, onStateChange);
       } else if (ev.reason === "error") {
+        if (isStartupAttemptActive()) {
+          return;
+        }
+
         failItemAndContinue(item, onStateChange);
       }
       return;
@@ -414,6 +419,8 @@ async function tryPlayWith(
   item: QueueItem,
   onStateChange: () => void
 ): Promise<boolean> {
+  let startupAttemptActive = true;
+
   try {
     const handle = await ensureMpvRunning();
 
@@ -434,7 +441,12 @@ async function tryPlayWith(
 
     onStateChange();
 
-    await attachListener(handle, item, onStateChange);
+    await attachListener(
+      handle,
+      item,
+      onStateChange,
+      () => startupAttemptActive
+    );
 
     await mpvSetAudioProfile(handle, state.control.audioProfile);
     await mpvSetHttpHeaders(handle, source.headers);
@@ -443,9 +455,11 @@ async function tryPlayWith(
     await mpvPause(handle, state.control.paused);
     await handle.waitForPlaybackStart(MPV_CONFIG.globalStartTimeoutMs);
 
+    startupAttemptActive = false;
     return true;
   } catch (err) {
-    console.error("[player] play error", err);
+    startupAttemptActive = false;
+    console.warn("[player] playable source failed before playback start", err);
     return false;
   }
 }

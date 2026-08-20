@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { pickUrlLike } from "../lib/api";
 import type { ThemeName } from "../lib/themes";
+import { Button, FieldLabel, TextInput } from "./ui";
 
 interface Props {
   url: string;
@@ -38,35 +39,7 @@ export default function FormInputs({
   theme,
 }: Props) {
   const isAdventurer = !rainbow && theme === "adventurer";
-  const isPremium = !rainbow && theme === "premium";
   const trimmedUrl = url.trim();
-
-  const formCls = `relative transition-all duration-300 shadow-soft ${
-    isAdventurer ? "organic-panel" : "rounded-xl bg-panel"
-  } ${
-    rainbow ? "rainbow-border rainbow-cycle" : "themed-border"
-  }`;
-
-  const inputCls = [
-    "w-full px-4 py-3 bg-transparent text-white placeholder:text-white/20 focus:outline-none border-none ring-0",
-    isAdventurer ? "font-medium tracking-wide" : "font-mono text-sm",
-    isPremium ? "text-[15px]" : "",
-    rainbow ? "rainbow-cycle" : "",
-  ].join(" ");
-
-  const labelCls = [
-    "text-[10px] uppercase tracking-[0.2em] mb-1.5 ml-1 flex items-center gap-2",
-    isAdventurer ? "font-semibold text-[#dbe9cf]/70" : "font-mono text-white/40",
-    rainbow ? "rainbow-cycle" : "",
-  ].join(" ");
-
-  const secondaryBtnCls = isAdventurer
-    ? `mt-2 px-3 py-2 rounded-full bg-white/5 border border-[#a3c46f]/20 flex items-center gap-2 text-[11px] font-medium text-[#e7efd9]/70 hover:text-white hover:bg-white/10 hover:border-[#a3c46f]/40 transition-all disabled:opacity-30 ${
-        rainbow ? "rainbow-cycle" : ""
-      }`
-    : `mt-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider text-white/50 hover:text-white hover:bg-white/10 hover:border-white/20 transition-all disabled:opacity-30 ${
-        rainbow ? "rainbow-cycle" : ""
-      }`;
 
   const sourceHint = (() => {
     const candidate = pickUrlLike(trimmedUrl);
@@ -154,33 +127,35 @@ export default function FormInputs({
     : trimmedUrl
     ? "Transmit"
     : "Signal requis";
+  const submitVariant = trimmedUrl || busy === "play" ? "primary" : "secondary";
 
   return (
-    <div className={`grid gap-4 md:gap-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[2fr,1.2fr,auto] mb-8 p-1 ${rainbow ? "rainbow-cycle" : ""}`}>
+    <div
+      className={`mb-8 grid grid-cols-1 gap-4 p-1 sm:grid-cols-2 md:gap-6 2xl:grid-cols-[minmax(0,1fr),minmax(240px,0.65fr),minmax(170px,auto)] ${
+        rainbow ? "rainbow-cycle" : ""
+      }`}
+    >
       <div className="flex flex-col">
-        <label className={labelCls}>
-          <Link2 size={12} className={rainbow ? "animate-hue text-pink-500" : "text-[var(--c1)]"} />
+        <FieldLabel theme={theme} rainbow={rainbow} icon={Link2} htmlFor="source-signal">
           Source Signal
-        </label>
+        </FieldLabel>
 
-        <div className={formCls}>
-          <input
-            className={inputCls}
-            placeholder="Spotify, YouTube, SoundCloud ou recherche"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onPaste={handlePasteUrl}
-            onKeyDown={handleKeyDown}
-            autoComplete="url"
-            autoCorrect="off"
-            autoCapitalize="none"
-            spellCheck={false}
-            aria-describedby="source-status"
-          />
-          {!isAdventurer && (
-            <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] rounded-xl" />
-          )}
-        </div>
+        <TextInput
+          id="source-signal"
+          theme={theme}
+          rainbow={rainbow}
+          placeholder="Spotify, YouTube, SoundCloud ou recherche"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onPaste={handlePasteUrl}
+          onKeyDown={handleKeyDown}
+          autoComplete="url"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
+          aria-describedby="source-status"
+          scanlines
+        />
 
         <div
           id="source-status"
@@ -195,37 +170,35 @@ export default function FormInputs({
           <span className="truncate">{sourceHint.detail}</span>
         </div>
 
-        <button
+        <Button
           onClick={() => pasteInto(setUrl, pickUrlLike)}
           disabled={!!busy}
-          className={secondaryBtnCls}
-          type="button"
+          icon={ClipboardPaste}
+          size="xs"
+          rainbow={rainbow}
+          className={`mt-2 ${isAdventurer ? "rounded-full" : "font-mono uppercase tracking-wider"}`}
         >
-          <ClipboardPaste className="w-3 h-3" />
           Auto-Link
-        </button>
+        </Button>
       </div>
 
       <div className="flex flex-col">
-        <label className={labelCls}>
-          <User size={12} className={rainbow ? "animate-hue text-pink-500" : "text-[var(--c1)]"} />
+        <FieldLabel theme={theme} rainbow={rainbow} icon={User} htmlFor="operator-id">
           Operator ID
-        </label>
+        </FieldLabel>
 
-        <div className={formCls}>
-          <input
-            className={inputCls}
-            placeholder="Guest_01 optionnel"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={handleKeyDown}
-            autoComplete="nickname"
-            aria-describedby="operator-status"
-          />
-          {!isAdventurer && (
-            <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] rounded-xl" />
-          )}
-        </div>
+        <TextInput
+          id="operator-id"
+          theme={theme}
+          rainbow={rainbow}
+          placeholder="Guest_01 optionnel"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={handleKeyDown}
+          autoComplete="nickname"
+          aria-describedby="operator-status"
+          scanlines
+        />
 
         <div
           id="operator-status"
@@ -236,53 +209,34 @@ export default function FormInputs({
           {name.trim() ? `Ajouté par ${name.trim()}` : "Sans nom, ce sera ajouté par anon."}
         </div>
 
-        <button
+        <Button
           onClick={() => pasteInto(setName)}
           disabled={!!busy}
-          className={secondaryBtnCls}
-          type="button"
+          icon={ClipboardPaste}
+          size="xs"
+          rainbow={rainbow}
+          className={`mt-2 ${isAdventurer ? "rounded-full" : "font-mono uppercase tracking-wider"}`}
         >
-          <ClipboardPaste className="w-3 h-3" />
           Recall ID
-        </button>
+        </Button>
       </div>
 
-      <div className="flex flex-col justify-end">
-        <button
+      <div className="flex min-w-0 flex-col justify-end sm:col-span-2 2xl:col-span-1">
+        <Button
           onClick={addToQueue}
           disabled={isButtonDisabled}
           title={isButtonDisabled ? submitLabel : "Ajouter à la file"}
-          type="button"
-          className={`
-            relative h-[48px] px-8 font-black uppercase tracking-tight transition-all duration-300
-            flex items-center justify-center gap-2 overflow-hidden
-            ${isAdventurer ? "rounded-full" : "rounded-xl"}
-            ${
-              isButtonDisabled
-                ? "bg-white/5 text-white/20 border border-white/5 cursor-not-allowed"
-                : rainbow
-                ? "theme-active-button rainbow-cycle hover:scale-[1.02] active:scale-95"
-                : "theme-active-button text-white shadow-[0_0_15px_rgba(255,255,255,0.1)] hover:scale-[1.02] active:scale-95"
-            }
-            ${isAdventurer ? "font-semibold italic" : "font-mono italic"}
-          `}
+          icon={PlusCircle}
+          loading={busy === "play"}
+          variant={submitVariant}
+          size="lg"
+          rainbow={rainbow}
+          className={`h-[48px] w-full min-w-0 2xl:min-w-[170px] ${
+            isAdventurer ? "rounded-full font-semibold" : "rounded-full font-mono"
+          }`}
         >
-          {busy === "play" ? (
-            <>
-              <span className="w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin" />
-              <span>{submitLabel}</span>
-            </>
-          ) : (
-            <>
-              <PlusCircle size={18} />
-              <span>{submitLabel}</span>
-            </>
-          )}
-
-          {!isButtonDisabled && (
-            <div className="absolute inset-0 bg-gradient-to-tr from-white/10 to-transparent opacity-0 hover:opacity-100 transition-opacity pointer-events-none" />
-          )}
-        </button>
+          {submitLabel}
+        </Button>
 
         <div className="h-[30px] hidden lg:block" />
       </div>

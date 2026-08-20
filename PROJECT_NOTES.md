@@ -41,6 +41,10 @@ Last updated: 2026-08-20
   - `backend/.data/provider-match-cache.json`
   - This file is ignored by Git through `.data`.
   - Cache stores stable provider matches, not temporary YouTube direct audio URLs.
+- Cookies should use one canonical path:
+  - `backend/cookies.txt`
+  - optional override: `YTDLP_COOKIES_PATH`
+  - old tracked duplicates under `backend/src/cookies.txt` and `backend/www.youtube.com_cookies.txt` were removed.
 
 ## Measured Backend Timings
 
@@ -87,6 +91,18 @@ Last updated: 2026-08-20
   - Socket.IO connected through Cloudflare
   - YouTube submit from the public URL started backend playback
   - Cloudflare quick tunnels are temporary; the URL changes when the tunnel is restarted.
+- Stable Cloudflare tunnel setup:
+  - `cloudflared` is installed locally.
+  - Local Cloudflare auth is configured through `C:\Users\poiri\.cloudflared\cert.pem`.
+  - Named tunnel created: `music-bot`.
+  - Tunnel ID: `61cece20-c61e-4f02-a696-5082ce92cee4`.
+  - Credentials file exists under `C:\Users\poiri\.cloudflared\61cece20-c61e-4f02-a696-5082ce92cee4.json`; do not commit or share it.
+  - DNS route added for `miss-noemie-music-bot.com`.
+  - Added `npm run dev:stable-tunnel` for a named tunnel.
+  - Added helper scripts: `tunnel:login`, `tunnel:create`, `tunnel:list`, `tunnel:route`.
+  - Default named tunnel is `music-bot`; override with `CLOUDFLARE_TUNNEL_NAME`.
+  - Browser smoke test on 2026-08-20 still returned `ERR_NAME_NOT_RESOLVED` for `https://miss-noemie-music-bot.com`, so verify registrar nameservers/Cloudflare zone activation or wait for DNS propagation.
+  - Current sharing decision: stay on free random `trycloudflare.com` URLs with `npm run dev`; do not pursue the custom domain until the domain is owned/configured.
 - Mobile visual pass at `390x844`:
   - no horizontal page overflow
   - source/operator inputs stack correctly
@@ -108,10 +124,28 @@ Last updated: 2026-08-20
   - a preloaded YouTube `bestaudio` URL can be refused by MPV with HTTP 403 after a skip
   - the player now invalidates the cached direct audio URL and retries with another extraction strategy
   - verified fallback source: `youtube-mpv-safe-android-cookies` format `18 mp4`
+- YouTube 403 startup retry polish:
+  - MPV can emit `end-file/error` during the first failed startup attempt before the alternate source succeeds.
+  - The player now lets startup retry handling own that error instead of briefly clearing the UI state.
 
 ## Frontend Notes
 
 - `Operator ID` is optional; empty names submit as `anon`.
+- Reusable UI primitives now live in `frontend/src/components/ui/`:
+  - `Button`
+  - `TextInput`
+  - `FieldLabel`
+  - `ThemedPanel`
+- Component library usage notes live in `docs/UI_COMPONENT_LIBRARY.md`.
+- Border/radius polish pass:
+  - shared UI tokens live in `frontend/src/styles/base.css`
+  - controls use pill-shaped `--ui-control-radius`
+  - cards/panels use larger smooth radii
+  - bordered buttons now have thicker borders, clearer hover, pressed states, and pointer cursors
+  - inputs should keep the liked shape: dark pill fill, smooth full-radius capsule, and a left-to-right border gradient from `--c1` to `--c2`.
+  - input border is implemented with real layered `background ... padding-box / border-box`, not a pseudo-border, to avoid clipped/cut corners.
+  - `Signal requis` uses the secondary button style while disabled, then switches to primary only when a source is ready to submit.
+  - `Lecture en cours` uses the same themed surface border system as the other boxes.
 - Source input now shows detected source state for Spotify, YouTube, SoundCloud, generic links, and text search.
 - Submit button now explains the disabled state with `Signal requis`.
 - Queue button `Skip` was renamed to `Passer groupe`; it skips the current group/playlist if present, otherwise it skips the current track.
@@ -132,5 +166,5 @@ Last updated: 2026-08-20
 
 - Test Discord capture quality while in a real Discord voice channel.
 - Confirm Discord input is listening to the intended VoiceMeeter virtual output/source.
-- For longer-term sharing, consider replacing quick `trycloudflare.com` tunnels with a named Cloudflare Tunnel so the URL is stable.
+- Optional later: buy/configure a domain, then confirm `miss-noemie-music-bot.com` resolves publicly and smoke test from the public URL again.
 - Consider a faster official SoundCloud streaming path if an API token/client setup becomes available; otherwise keep the current stable YouTube fallback behavior.

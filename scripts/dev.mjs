@@ -8,8 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const withTunnel = process.argv.includes("--tunnel");
+const withStableTunnel =
+  process.argv.includes("--stable-tunnel") ||
+  process.argv.includes("--named-tunnel");
 const checkOnly = process.argv.includes("--check");
 const isWindows = process.platform === "win32";
+const stableTunnelName = process.env.CLOUDFLARE_TUNNEL_NAME || "music-bot";
 
 const children = new Set();
 let shuttingDown = false;
@@ -196,7 +200,21 @@ async function main() {
   await waitFor(`http://127.0.0.1:${frontendPort}`, "frontend");
   console.log(`[dev] Frontend local: http://localhost:${frontendPort}`);
 
-  if (withTunnel) {
+  if (withStableTunnel) {
+    console.log(`[dev] Demarrage du tunnel Cloudflare nomme: ${stableTunnelName}`);
+    startProcess(
+      "tunnel",
+      "cloudflared",
+      [
+        "tunnel",
+        "run",
+        "--url",
+        `http://localhost:${frontendPort}`,
+        stableTunnelName,
+      ],
+      rootDir
+    );
+  } else if (withTunnel) {
     console.log("[dev] Demarrage du tunnel Cloudflare...");
     startProcess(
       "tunnel",

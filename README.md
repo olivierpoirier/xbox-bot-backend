@@ -61,13 +61,55 @@ Lance le bot complet avec backend local, frontend et tunnel Cloudflare:
 npm run dev
 ```
 
+Pour le moment, c'est le mode de partage recommandé: Cloudflare donne une URL random `trycloudflare.com` gratuite à chaque lancement, sans domaine acheté.
+
 Lance seulement en local, sans tunnel:
 
 ```bash
 npm run dev:local
 ```
 
-Le backend répond sur `http://localhost:4000`. Le frontend démarre sur `http://localhost:5173` ou sur le prochain port libre. Quand le tunnel est actif, partage l'URL `trycloudflare.com` affichée dans le terminal.
+Lance avec un tunnel Cloudflare nommé/stable après la configuration initiale, seulement si tu possèdes un domaine:
+
+```bash
+npm run dev:stable-tunnel
+```
+
+Le backend répond sur `http://localhost:4000`. Le frontend démarre sur `http://localhost:5173` ou sur le prochain port libre. Avec le quick tunnel, partage l'URL `trycloudflare.com` affichée dans le terminal; avec le tunnel stable, partage le hostname Cloudflare configuré.
+
+## Tunnel Cloudflare
+
+Le mode recommandé sans domaine acheté est:
+
+```bash
+npm run dev
+```
+
+Il utilise un quick tunnel `trycloudflare.com`; son URL change à chaque nouveau tunnel, mais c'est gratuit et suffisant pour partager temporairement l'app.
+
+Pour partager une adresse fixe à un groupe, il faut posséder un domaine, créer un tunnel nommé et l'associer à un hostname Cloudflare.
+
+Une seule fois:
+
+```bash
+npm run tunnel:login
+npm run tunnel:create
+npm run tunnel:route -- miss-noemie-music-bot.com
+```
+
+Remplace `miss-noemie-music-bot.com` par ton vrai hostname Cloudflare si tu changes de domaine. Ensuite, lance l'app avec:
+
+```bash
+npm run dev:stable-tunnel
+```
+
+Par défaut, le tunnel nommé s'appelle `music-bot`. Pour utiliser un autre nom, définis `CLOUDFLARE_TUNNEL_NAME` avant de lancer `npm run dev:stable-tunnel`.
+
+Configuration actuelle:
+
+- tunnel Cloudflare nommé: `music-bot`
+- hostname stable prévu: `https://miss-noemie-music-bot.com`
+- le domaine custom reste optionnel tant qu'on ne veut pas acheter/configurer un domaine; utilise `npm run dev` pour rester sur une URL random gratuite.
 
 ## Prérequis audio
 

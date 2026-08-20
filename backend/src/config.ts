@@ -50,9 +50,7 @@ function findCookiesPath(): string | null {
   const explicitPath = readEnv("YTDLP_COOKIES_PATH");
   const candidates = [
     explicitPath,
-    path.resolve(process.cwd(), "cookies.txt"),
-    path.resolve(process.cwd(), "www.youtube.com_cookies.txt"),
-    path.resolve(process.cwd(), "backend", "cookies.txt"),
+    path.resolve(BACKEND_ROOT, "cookies.txt"),
   ].filter(Boolean);
 
   return (

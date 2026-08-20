@@ -18,6 +18,7 @@ import {
   mpvSetAudioProfile,
 } from "./mpv.js";
 import {
+  buildSoundCloudYoutubeQuery,
   getPlayableSource,
   normalizeUrl,
   probeSingle,
@@ -29,6 +30,8 @@ import { MPV_CONFIG, PLAYER_CONFIG } from "./config.js";
 import { isVirtualAudioRoutingReady } from "./utils.js";
 import type { AudioProfileName } from "./audioProfiles.js";
 import { isSoundCloudUrl } from "./platforms/index.js";
+import { performance } from "node:perf_hooks";
+import { recordBackendMetric } from "./metrics.js";
 
 let globalMpvHandle: MpvHandle | null = null;
 let isLooping = false;
@@ -49,6 +52,91 @@ type PreloadingSource = {
 let preloaded = new Map<string, PreloadedSource>();
 let preloading = new Map<string, PreloadingSource>();
 let preloadWorkerRunning = false;
+
+type ProviderMatch = {
+  url: string;
+  title?: string;
+  thumb?: string | null;
+  durationSec?: number;
+};
+
+type ProviderMatchCacheVal = {
+  value: ProviderMatch;
+  exp: number;
+};
+
+const providerMatchCache = new Map<string, ProviderMatchCacheVal>();
+
+function getProviderMatch(key: string): ProviderMatch | null {
+  const cached = providerMatchCache.get(key);
+  if (!cached) return null;
+
+  if (cached.exp < Date.now()) {
+    providerMatchCache.delete(key);
+    return null;
+  }
+
+  return { ...cached.value };
+}
+
+function setProviderMatch(key: string, value: ProviderMatch): void {
+  if (providerMatchCache.size >= PLAYER_CONFIG.providerMatchCacheMax) {
+    const first = providerMatchCache.keys().next();
+    if (!first.done) providerMatchCache.delete(first.value);
+  }
+
+  providerMatchCache.set(key, {
+    value: { ...value },
+    exp: Date.now() + PLAYER_CONFIG.providerMatchCacheTTLMs,
+  });
+}
+
+function deleteProviderMatch(key: string): void {
+  providerMatchCache.delete(key);
+}
+
+function normalizeProviderMatchText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function spotifyMatchCacheKey(
+  query: string,
+  durationSec?: number | null
+): string {
+  return [
+    "spotify",
+    normalizeProviderMatchText(query),
+    Math.round(durationSec || 0),
+  ].join("|");
+}
+
+function soundCloudFallbackCacheKey(normalizedUrl: string): string {
+  return `soundcloud-fallback|${normalizedUrl}`;
+}
+
+function applyProviderMatch(item: QueueItem, match: ProviderMatch): void {
+  item.url = match.url;
+  item.title = item.title || match.title || item.title;
+  item.thumb = item.thumb || match.thumb || null;
+  item.durationSec = item.durationSec || match.durationSec || 0;
+}
+
+function recordProviderMatchCache(
+  provider: "spotify" | "soundcloud",
+  hit: boolean,
+  startedAt: number
+): void {
+  recordBackendMetric("provider-match-cache", performance.now() - startedAt, true, {
+    provider,
+    hit,
+  });
+}
 
 function computeCurrentPosition(): number {
   if (!state.now) return 0;
@@ -131,7 +219,11 @@ async function resolveItemToSource(
 
   if (item.url.startsWith("provider:")) return null;
 
-  return getPlayableSource(normalizeUrl(item.url), state.control.audioProfile);
+  const normalized = normalizeUrl(item.url);
+  const source = await getPlayableSource(normalized, state.control.audioProfile);
+  if (source) return source;
+
+  return resolveSoundCloudFallbackSource(item, normalized);
 }
 
 async function preloadTrack(item: QueueItem): Promise<PlayableSource | null> {
@@ -394,7 +486,18 @@ async function resolveSpotifyItem(item: QueueItem): Promise<boolean> {
   if (!item.url.startsWith("provider:spotify:")) return true;
 
   try {
+    const startedAt = performance.now();
     const query = item.url.replace("provider:spotify:", "").trim();
+    const cacheKey = spotifyMatchCacheKey(query, item.durationSec);
+    const cached = getProviderMatch(cacheKey);
+
+    if (cached) {
+      applyProviderMatch(item, cached);
+      recordProviderMatchCache("spotify", true, startedAt);
+      return true;
+    }
+
+    recordProviderMatchCache("spotify", false, startedAt);
 
     const result = await searchYoutubeVideo(query, {
       expectedDurationSec: item.durationSec,
@@ -409,6 +512,13 @@ async function resolveSpotifyItem(item: QueueItem): Promise<boolean> {
     item.title = item.title || result.title || query;
     item.thumb = item.thumb || result.thumb || null;
     item.durationSec = item.durationSec || result.durationSec || 0;
+
+    setProviderMatch(cacheKey, {
+      url: result.url,
+      title: result.title || item.title || query,
+      thumb: result.thumb || item.thumb || null,
+      durationSec: result.durationSec || item.durationSec || 0,
+    });
 
     return true;
   } catch (err) {
@@ -427,6 +537,11 @@ async function resolvePlaybackSource(
   }
 
   const normalized = normalizeUrl(item.url);
+  const cachedSoundCloudSource = await resolveCachedSoundCloudFallbackSource(
+    item,
+    normalized
+  );
+  if (cachedSoundCloudSource) return cachedSoundCloudSource;
 
   try {
     const resolved = await resolvePlayable(
@@ -445,19 +560,22 @@ async function resolvePlaybackSource(
 }
 
 async function resolveSoundCloudFallbackSource(
-  item: QueueItem
+  item: QueueItem,
+  normalizedUrl = normalizeUrl(item.url)
 ): Promise<PlayableSource | null> {
-  const normalized = normalizeUrl(item.url);
-  if (!isSoundCloudUrl(normalized)) return null;
+  if (!isSoundCloudUrl(normalizedUrl)) return null;
 
   try {
-    const metadata = await probeSingle(normalized);
-    const query = metadata.title?.trim();
+    const metadata = await probeSingle(normalizedUrl);
+    const query = buildSoundCloudYoutubeQuery(metadata.title?.trim(), normalizedUrl);
     if (!query || query.toLowerCase() === "soundcloud") return null;
 
     console.warn(`[player] SoundCloud direct failed; trying YouTube for "${query}"`);
 
-    const found = await searchYoutubeVideo(query);
+    const found = await searchYoutubeVideo(query, {
+      expectedDurationSec: metadata.durationSec || item.durationSec,
+      limit: 8,
+    });
     if (!found?.url) return null;
 
     item.url = found.url;
@@ -465,11 +583,43 @@ async function resolveSoundCloudFallbackSource(
     item.thumb = metadata.thumb || found.thumb || item.thumb;
     item.durationSec = metadata.durationSec || found.durationSec || item.durationSec;
 
+    setProviderMatch(soundCloudFallbackCacheKey(normalizedUrl), {
+      url: found.url,
+      title: item.title,
+      thumb: item.thumb,
+      durationSec: item.durationSec,
+    });
+
     return getPlayableSource(found.url, state.control.audioProfile);
   } catch (err) {
     console.warn("[player] SoundCloud fallback failed", err);
     return null;
   }
+}
+
+async function resolveCachedSoundCloudFallbackSource(
+  item: QueueItem,
+  normalizedUrl: string
+): Promise<PlayableSource | null> {
+  if (!isSoundCloudUrl(normalizedUrl)) return null;
+
+  const startedAt = performance.now();
+  const cacheKey = soundCloudFallbackCacheKey(normalizedUrl);
+  const cached = getProviderMatch(cacheKey);
+
+  if (!cached) {
+    recordProviderMatchCache("soundcloud", false, startedAt);
+    return null;
+  }
+
+  applyProviderMatch(item, cached);
+  recordProviderMatchCache("soundcloud", true, startedAt);
+
+  const source = await getPlayableSource(item.url, state.control.audioProfile);
+  if (source) return source;
+
+  deleteProviderMatch(cacheKey);
+  return null;
 }
 
 /* ------------------- END TRACK ------------------- */

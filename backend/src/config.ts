@@ -170,6 +170,14 @@ export const MPV_CONFIG = {
 export const PLAYER_CONFIG = {
   preloadAhead: Math.min(envNumber("PLAYER_PRELOAD_AHEAD", 3), 6),
   preloadCacheMax: Math.min(envNumber("PLAYER_PRELOAD_CACHE_MAX", 8), 16),
+  providerMatchCacheMax: Math.min(
+    envNumber("PLAYER_PROVIDER_MATCH_CACHE_MAX", 1_000),
+    10_000
+  ),
+  providerMatchCacheTTLMs: Math.min(
+    envNumber("PLAYER_PROVIDER_MATCH_CACHE_TTL_MS", 86_400_000),
+    604_800_000
+  ),
 };
 
 export const SECURITY_CONFIG = {
@@ -205,6 +213,10 @@ export const YTDLP_CONFIG = {
 
   cacheTTL: 600_000,
   cacheMax: 512,
+  searchCacheTTLMs: Math.min(
+    envNumber("YTDLP_SEARCH_CACHE_TTL_MS", 21_600_000),
+    86_400_000
+  ),
   processTimeoutMs: 60_000,
   soundCloudMetadataTimeoutMs: Math.min(
     envNumber("YTDLP_SOUNDCLOUD_METADATA_TIMEOUT_MS", 8_000),

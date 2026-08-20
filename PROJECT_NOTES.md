@@ -1,6 +1,6 @@
 # Project Notes
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 ## Local Audio Setup
 
@@ -33,6 +33,10 @@ Last updated: 2026-08-19
   - play through MPV + VoiceMeeter
 - SoundCloud metadata should use oEmbed first to avoid long yt-dlp waits.
 - SoundCloud direct playback should fail quickly, then fallback toward YouTube search when possible.
+- Repeated provider matches should be cached in memory:
+  - Spotify query/duration -> YouTube result
+  - repeated YouTube searches -> cached result
+  - SoundCloud URL -> learned YouTube fallback after direct SoundCloud fails
 
 ## Measured Backend Timings
 
@@ -51,6 +55,12 @@ Last updated: 2026-08-19
 - SoundCloud metadata through oEmbed: about 0.3-0.5 s
 - SoundCloud direct stream timeout after optimization: about 5.1 s
 - SoundCloud with fallback toward YouTube: about 9.1 s
+- YouTube search cache test:
+  - first `Rick Astley - Never Gonna Give You Up official audio` lookup used `play-dl`
+  - second identical lookup returned from cache
+- SoundCloud fallback query cleanup test:
+  - `Stream My Track by My Artist | Listen online for free on SoundCloud`
+  - becomes `My Artist - My Track`
 
 ## Current Verification Status
 
@@ -58,12 +68,12 @@ Last updated: 2026-08-19
 - Backend production audit: 0 vulnerabilities
 - Backend build: OK when run outside the sandbox, because `backend/dist` denies writes inside the sandbox.
 - Web UI Spotify playback path: OK in local browser test.
+- Backend provider/search cache targeted runtime test: OK.
 - Frontend TypeScript/build/lint were previously OK before backend-only work.
 
 ## Remaining Work
 
 - Test Discord capture quality while in a real Discord voice channel.
 - Confirm Discord input is listening to the intended VoiceMeeter virtual output/source.
-- Consider caching Spotify-to-playable mappings for repeat requests.
-- Consider a faster official SoundCloud streaming path if an API token/client setup is available; otherwise keep the current fast metadata plus YouTube fallback behavior.
+- Consider a faster official SoundCloud streaming path if an API token/client setup becomes available; otherwise keep the current fast metadata plus cached YouTube fallback behavior.
 - Frontend still needs to be updated/reviewed after backend work.

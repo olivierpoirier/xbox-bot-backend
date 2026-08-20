@@ -48,6 +48,8 @@ export type PlayableSource = {
 
 const DIRECT_CACHE = new Map<string, CacheVal<PlayableSource>>();
 const FLAT_CACHE = new Map<string, CacheVal<ResolvedItem[]>>();
+const YOUTUBE_SEARCH_CACHE = new Map<string, CacheVal<ResolvedItem>>();
+const SOUNDCLOUD_EXPAND_CACHE = new Map<string, CacheVal<string>>();
 
 function cacheGet<K, V>(map: Map<K, CacheVal<V>>, key: K): V | undefined {
   const val = map.get(key);
@@ -61,7 +63,12 @@ function cacheGet<K, V>(map: Map<K, CacheVal<V>>, key: K): V | undefined {
   return val.v;
 }
 
-function cacheSet<K, V>(map: Map<K, CacheVal<V>>, key: K, value: V): void {
+function cacheSet<K, V>(
+  map: Map<K, CacheVal<V>>,
+  key: K,
+  value: V,
+  ttlMs = YTDLP_CONFIG.cacheTTL
+): void {
   if (map.size >= YTDLP_CONFIG.cacheMax) {
     const first = map.keys().next();
     if (!first.done) map.delete(first.value);
@@ -69,7 +76,7 @@ function cacheSet<K, V>(map: Map<K, CacheVal<V>>, key: K, value: V): void {
 
   map.set(key, {
     v: value,
-    exp: Date.now() + YTDLP_CONFIG.cacheTTL,
+    exp: Date.now() + ttlMs,
   });
 }
 
@@ -205,6 +212,10 @@ function cleanText(value: unknown): string | null {
   }
 
   return trimmed;
+}
+
+function cloneResolvedItem(item: ResolvedItem): ResolvedItem {
+  return { ...item };
 }
 
 function titleFromUrl(value?: string | null): string | null {
@@ -347,6 +358,47 @@ function mapYoutubeSearchResult(data: any, query: string): ResolvedItem | null {
   };
 }
 
+export function buildSoundCloudYoutubeQuery(
+  title?: string | null,
+  url?: string | null
+): string {
+  const fallbackTitle = title || "SoundCloud";
+  const cleanedTitle = fallbackTitle
+    .replace(/^stream\s+/i, "")
+    .replace(/\s*\|\s*listen online for free on soundcloud\s*$/i, "")
+    .replace(/\s+on\s+soundcloud\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const byMatch = cleanedTitle.match(/^(.+?)\s+by\s+(.+?)$/i);
+  if (byMatch?.[1] && byMatch?.[2] && !cleanedTitle.includes(" - ")) {
+    return `${byMatch[2].trim()} - ${byMatch[1].trim()}`;
+  }
+
+  if (cleanedTitle) return cleanedTitle;
+
+  if (!url) return fallbackTitle;
+
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname
+      .split("/")
+      .filter(Boolean)
+      .map((part) =>
+        decodeURIComponent(part)
+          .replace(/[-_]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+      )
+      .filter(Boolean);
+
+    if (parts.length >= 2) return `${parts[0]} - ${parts[1]}`;
+    return parts[0] || fallbackTitle;
+  } catch {
+    return fallbackTitle;
+  }
+}
+
 async function fetchJsonWithTimeout<T>(
   url: string,
   timeoutMs: number
@@ -379,32 +431,87 @@ async function fetchJsonWithTimeout<T>(
   }
 }
 
+async function expandSoundCloudShortUrl(normalized: string): Promise<string> {
+  if (!isSoundCloudShortUrl(normalized)) return normalized;
+
+  const cached = cacheGet(SOUNDCLOUD_EXPAND_CACHE, normalized);
+  if (cached) return cached;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    YTDLP_CONFIG.soundCloudMetadataTimeoutMs
+  );
+  const startedAt = performance.now();
+
+  try {
+    const res = await fetch(normalized, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: {
+        accept: "text/html,application/xhtml+xml",
+        "user-agent": MPV_CONFIG.userAgent,
+      },
+    });
+
+    await res.body?.cancel().catch(() => {});
+
+    const finalUrl =
+      typeof res.url === "string" && isSoundCloudUrl(res.url)
+        ? normalizeUrl(res.url)
+        : normalized;
+
+    recordBackendMetric("soundcloud-expand", performance.now() - startedAt, true, {
+      changed: finalUrl !== normalized,
+      status: res.status,
+    });
+
+    cacheSet(SOUNDCLOUD_EXPAND_CACHE, normalized, finalUrl);
+    return finalUrl;
+  } catch (err) {
+    recordBackendMetric("soundcloud-expand", performance.now() - startedAt, false, {
+      changed: false,
+    });
+    console.warn("[soundcloud expand failed]", err);
+    return normalized;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function resolveSoundCloudOEmbed(
   normalized: string
 ): Promise<ProbeResult | null> {
-  try {
-    const data = await fetchJsonWithTimeout<{
-      title?: string;
-      thumbnail_url?: string;
-    }>(
-      `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(
-        normalized
-      )}`,
-      YTDLP_CONFIG.soundCloudMetadataTimeoutMs
-    );
+  const expanded = await expandSoundCloudShortUrl(normalized);
+  const candidates =
+    expanded === normalized ? [normalized] : [expanded, normalized];
 
-    const title = cleanText(data.title);
-    if (!title) return null;
+  for (const candidate of candidates) {
+    try {
+      const data = await fetchJsonWithTimeout<{
+        title?: string;
+        thumbnail_url?: string;
+      }>(
+        `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(
+          candidate
+        )}`,
+        YTDLP_CONFIG.soundCloudMetadataTimeoutMs
+      );
 
-    return {
-      title,
-      thumb: cleanText(data.thumbnail_url) || buildFallbackThumb(title, normalized),
-      durationSec: 0,
-    };
-  } catch (err) {
-    console.warn("[soundcloud oembed failed]", err);
-    return null;
+      const title = cleanText(data.title);
+      if (!title) continue;
+
+      return {
+        title,
+        thumb: cleanText(data.thumbnail_url) || buildFallbackThumb(title, candidate),
+        durationSec: 0,
+      };
+    } catch (err) {
+      console.warn("[soundcloud oembed failed]", err);
+    }
   }
+
+  return null;
 }
 
 type YoutubeSearchOptions = {
@@ -497,6 +604,45 @@ export async function searchYoutubeVideo(
   const trimmed = query.trim();
   if (!trimmed) return null;
   const limit = Math.max(1, Math.min(options.limit || 5, 10));
+  const startedAt = performance.now();
+  const cacheKey = [
+    normalizeSearchText(trimmed).join(" "),
+    limit,
+    Math.round(options.expectedDurationSec || 0),
+  ].join("|");
+  const cached = cacheGet(YOUTUBE_SEARCH_CACHE, cacheKey);
+
+  if (cached) {
+    recordBackendMetric("youtube-search", performance.now() - startedAt, true, {
+      source: "cache",
+      limit,
+      expectedDuration: Boolean(options.expectedDurationSec),
+    });
+    return cloneResolvedItem(cached);
+  }
+
+  const finish = (
+    item: ResolvedItem | null,
+    source: "play-dl" | "yt-dlp" | "none",
+    ok = Boolean(item)
+  ): ResolvedItem | null => {
+    recordBackendMetric("youtube-search", performance.now() - startedAt, ok, {
+      source,
+      limit,
+      expectedDuration: Boolean(options.expectedDurationSec),
+    });
+
+    if (!item) return null;
+
+    cacheSet(
+      YOUTUBE_SEARCH_CACHE,
+      cacheKey,
+      cloneResolvedItem(item),
+      YTDLP_CONFIG.searchCacheTTLMs
+    );
+
+    return cloneResolvedItem(item);
+  };
 
   try {
     const results = await play.search(trimmed, {
@@ -512,7 +658,7 @@ export async function searchYoutubeVideo(
       trimmed,
       options.expectedDurationSec
     );
-    if (item) return item;
+    if (item) return finish(item, "play-dl");
   } catch (err) {
     console.warn("[youtube search] play-dl failed; trying yt-dlp", err);
   }
@@ -539,12 +685,12 @@ export async function searchYoutubeVideo(
       options.expectedDurationSec
     );
 
-    if (item) return item;
+    if (item) return finish(item, "yt-dlp");
   } catch (err) {
     console.warn("[youtube search] yt-dlp failed", err);
   }
 
-  return null;
+  return finish(null, "none", false);
 }
 
 async function resolveSoundCloudItems(

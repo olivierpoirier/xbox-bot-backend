@@ -1,4 +1,6 @@
 import type { ResolvedItem } from "./types.js";
+import { performance } from "node:perf_hooks";
+import { recordBackendMetric } from "./metrics.js";
 
 type SpotifyTokenCache = {
   accessToken: string;
@@ -159,11 +161,17 @@ async function refreshSpotifyAccessToken(): Promise<string> {
 
 async function spotifyGet<T>(url: string): Promise<T> {
   const accessToken = await refreshSpotifyAccessToken();
+  const startedAt = performance.now();
 
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
+  });
+
+  recordBackendMetric("spotify-api", performance.now() - startedAt, res.ok, {
+    endpoint: sanitizeSpotifyMetricUrl(url),
+    status: res.status,
   });
 
   if (!res.ok) {
@@ -183,6 +191,15 @@ async function spotifyGet<T>(url: string): Promise<T> {
   }
 
   return (await res.json()) as T;
+}
+
+function sanitizeSpotifyMetricUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return url.pathname.replace(/\/[A-Za-z0-9]{10,}/g, "/:id");
+  } catch {
+    return "unknown";
+  }
 }
 
 function parseSpotifyUrl(
@@ -232,10 +249,10 @@ function parseSpotifyUrl(
 
 function trackToResolvedItem(track: SpotifyTrack): ResolvedItem {
   const artist = track.artists?.map((a) => a.name).join(", ") || "";
-  const query = artist ? `${artist} - ${track.name}` : track.name;
+  const baseQuery = artist ? `${artist} - ${track.name}` : track.name;
 
   return {
-    url: `provider:spotify:${query}`,
+    url: `provider:spotify:${baseQuery} official audio`,
     title: track.name,
     thumb: track.album?.images?.[0]?.url || null,
     durationSec: Math.floor((track.duration_ms || 0) / 1000),

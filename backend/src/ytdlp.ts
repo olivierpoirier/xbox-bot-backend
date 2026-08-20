@@ -1,13 +1,17 @@
 import { spawn } from "child_process";
 import play from "play-dl";
+import { performance } from "node:perf_hooks";
 import { resolveSpotifyUrl, SpotifyResolverError } from "./spotify.js";
 
-import { YTDLP_CONFIG } from "./config.js";
+import { MPV_CONFIG, YTDLP_CONFIG } from "./config.js";
+import { recordBackendMetric } from "./metrics.js";
 import { ProbeResult, ResolvedItem } from "./types.js";
 import {
   getMediaPlatform,
   isDirectMediaUrl,
   isPlaylistUrl,
+  isSoundCloudSetUrl,
+  isSoundCloudShortUrl,
   isSoundCloudUrl,
   isSpotifyUrl,
   isYoutubeSearchUrl,
@@ -343,25 +347,177 @@ function mapYoutubeSearchResult(data: any, query: string): ResolvedItem | null {
   };
 }
 
+async function fetchJsonWithTimeout<T>(
+  url: string,
+  timeoutMs: number
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = performance.now();
+
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        accept: "application/json",
+        "user-agent": MPV_CONFIG.userAgent,
+      },
+    });
+
+    recordBackendMetric("fetch-json", performance.now() - startedAt, res.ok, {
+      platform: getMediaPlatform(url),
+      status: res.status,
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveSoundCloudOEmbed(
+  normalized: string
+): Promise<ProbeResult | null> {
+  try {
+    const data = await fetchJsonWithTimeout<{
+      title?: string;
+      thumbnail_url?: string;
+    }>(
+      `https://soundcloud.com/oembed?format=json&url=${encodeURIComponent(
+        normalized
+      )}`,
+      YTDLP_CONFIG.soundCloudMetadataTimeoutMs
+    );
+
+    const title = cleanText(data.title);
+    if (!title) return null;
+
+    return {
+      title,
+      thumb: cleanText(data.thumbnail_url) || buildFallbackThumb(title, normalized),
+      durationSec: 0,
+    };
+  } catch (err) {
+    console.warn("[soundcloud oembed failed]", err);
+    return null;
+  }
+}
+
+type YoutubeSearchOptions = {
+  expectedDurationSec?: number | null;
+  limit?: number;
+};
+
+function normalizeSearchText(value: string): string[] {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function scoreYoutubeCandidate(
+  item: ResolvedItem,
+  query: string,
+  expectedDurationSec?: number | null
+): number {
+  let score = 0;
+  const title = item.title || "";
+  const titleTokens = new Set(normalizeSearchText(title));
+  const queryTokens = normalizeSearchText(query);
+
+  for (const token of queryTokens) {
+    if (titleTokens.has(token)) score += 4;
+  }
+
+  const loweredTitle = title.toLowerCase();
+  const loweredQuery = query.toLowerCase();
+  const noisyTerms = [
+    "live",
+    "remix",
+    "cover",
+    "karaoke",
+    "instrumental",
+    "lyrics",
+    "paroles",
+    "slowed",
+    "sped up",
+    "nightcore",
+    "reaction",
+  ];
+
+  for (const term of noisyTerms) {
+    if (loweredTitle.includes(term) && !loweredQuery.includes(term)) {
+      score -= 12;
+    }
+  }
+
+  if (loweredTitle.includes("official audio")) score += 8;
+  if (loweredTitle.includes("official video")) score += 5;
+  if (loweredTitle.includes("topic")) score += 4;
+
+  if (expectedDurationSec && item.durationSec) {
+    const diff = Math.abs(item.durationSec - expectedDurationSec);
+    if (diff <= 2) score += 30;
+    else if (diff <= 5) score += 22;
+    else if (diff <= 10) score += 12;
+    else if (diff <= 20) score += 4;
+    else score -= Math.min(30, Math.floor(diff / 5));
+  }
+
+  return score;
+}
+
+function pickBestYoutubeSearchResult(
+  candidates: ResolvedItem[],
+  query: string,
+  expectedDurationSec?: number | null
+): ResolvedItem | null {
+  if (!candidates.length) return null;
+
+  return candidates
+    .map((item) => ({
+      item,
+      score: scoreYoutubeCandidate(item, query, expectedDurationSec),
+    }))
+    .sort((a, b) => b.score - a.score)[0]?.item ?? null;
+}
+
 export async function searchYoutubeVideo(
-  query: string
+  query: string,
+  options: YoutubeSearchOptions = {}
 ): Promise<ResolvedItem | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;
+  const limit = Math.max(1, Math.min(options.limit || 5, 10));
 
   try {
     const results = await play.search(trimmed, {
-      limit: 1,
+      limit,
       source: { youtube: "video" },
     });
 
-    const item = mapYoutubeSearchResult(results[0], trimmed);
+    const candidates = results
+      .map((result) => mapYoutubeSearchResult(result, trimmed))
+      .filter((item): item is ResolvedItem => Boolean(item));
+    const item = pickBestYoutubeSearchResult(
+      candidates,
+      trimmed,
+      options.expectedDurationSec
+    );
     if (item) return item;
   } catch (err) {
     console.warn("[youtube search] play-dl failed; trying yt-dlp", err);
   }
 
-  const searchUrl = `ytsearch1:${trimmed}`;
+  const searchUrl = `ytsearch${limit}:${trimmed}`;
 
   try {
     const json = await runYtDlp(
@@ -371,8 +527,17 @@ export async function searchYoutubeVideo(
     );
 
     const data = JSON.parse(json);
-    const first = Array.isArray(data?.entries) ? data.entries[0] : data;
-    const item = mapYoutubeSearchResult(first, trimmed);
+    const entries: unknown[] = Array.isArray(data?.entries)
+      ? data.entries
+      : [data];
+    const candidates = entries
+      .map((entry: unknown) => mapYoutubeSearchResult(entry, trimmed))
+      .filter((item): item is ResolvedItem => Boolean(item));
+    const item = pickBestYoutubeSearchResult(
+      candidates,
+      trimmed,
+      options.expectedDurationSec
+    );
 
     if (item) return item;
   } catch (err) {
@@ -386,6 +551,9 @@ async function resolveSoundCloudItems(
   normalized: string
 ): Promise<ResolvedItem[] | null> {
   if (!isSoundCloudUrl(normalized)) return null;
+  if (!isSoundCloudSetUrl(normalized) && !isSoundCloudShortUrl(normalized)) {
+    return null;
+  }
 
   try {
     const json = await runYtDlp(
@@ -398,7 +566,10 @@ async function resolveSoundCloudItems(
         "200",
         normalized,
       ],
-      { useCookies: false }
+      {
+        useCookies: false,
+        timeoutMs: YTDLP_CONFIG.soundCloudMetadataTimeoutMs,
+      }
     );
 
     const data = JSON.parse(json);
@@ -474,9 +645,31 @@ async function resolveYoutubePlaylistFast(
 async function runYtDlp(
   url: string,
   extraArgs: string[],
-  opts?: { useCookies?: boolean; youtubePlayerClient?: string | null }
+  opts?: {
+    useCookies?: boolean;
+    youtubePlayerClient?: string | null;
+    timeoutMs?: number;
+  }
 ): Promise<string> {
   const finalArgs = buildYtDlpArgs(url, extraArgs, opts);
+  const startedAt = performance.now();
+  const platform = getMediaPlatform(url);
+  const mode = extraArgs.includes("-J")
+    ? "playlist"
+    : extraArgs.includes("--dump-single-json")
+    ? "json"
+    : "other";
+
+  const record = (
+    ok: boolean,
+    data: Record<string, unknown> = {}
+  ): void => {
+    recordBackendMetric("yt-dlp", performance.now() - startedAt, ok, {
+      platform,
+      mode,
+      ...data,
+    });
+  };
 
   return new Promise((resolve, reject) => {
     console.log(`[yt-dlp] ${YTDLP_CONFIG.bin} ${finalArgs.join(" ")}`);
@@ -500,8 +693,9 @@ async function runYtDlp(
         console.error("[yt-dlp timeout stderr]", err);
       }
 
+      record(false, { timeout: true });
       reject(new Error("yt-dlp timeout"));
-    }, YTDLP_CONFIG.processTimeoutMs);
+    }, opts?.timeoutMs ?? YTDLP_CONFIG.processTimeoutMs);
 
     proc.stdout.on("data", (d) => {
       out += d.toString();
@@ -515,6 +709,7 @@ async function runYtDlp(
       if (finished) return;
       finished = true;
       clearTimeout(timeout);
+      record(false, { spawnError: true });
       reject(spawnErr);
     });
 
@@ -524,11 +719,13 @@ async function runYtDlp(
       clearTimeout(timeout);
 
       if (code === 0) {
+        record(true);
         resolve(out.trim());
       } else {
         if (err.trim()) {
           console.error("[yt-dlp error]", err);
         }
+        record(false, { exitCode: code });
         reject(new Error(err || `Exit code ${code}`));
       }
     });
@@ -680,6 +877,14 @@ export async function probeSingle(url: string): Promise<ProbeResult> {
     return res;
   }
 
+  if (isSoundCloudUrl(normalized)) {
+    const oembed = await resolveSoundCloudOEmbed(normalized);
+    if (oembed) {
+      cacheSet(PROBE_CACHE, normalized, oembed);
+      return oembed;
+    }
+  }
+
   if (play.yt_validate(normalized) === "video") {
     try {
       const info = await play.video_info(normalized);
@@ -703,7 +908,12 @@ export async function probeSingle(url: string): Promise<ProbeResult> {
     const json = await runYtDlp(
       normalized,
       ["--dump-single-json", "--no-playlist", normalized],
-      { useCookies: true }
+      {
+        useCookies: true,
+        timeoutMs: isSoundCloudUrl(normalized)
+          ? YTDLP_CONFIG.soundCloudMetadataTimeoutMs
+          : undefined,
+      }
     );
 
     const data = JSON.parse(json);
@@ -799,10 +1009,23 @@ type PlaybackExtractionAttempt = {
 const YOUTUBE_BALANCED_QUALITY_FORMAT =
   "best[ext=mp4][height<=720]/best[ext=mp4][height<=480]/18/bestaudio/best";
 
+const YOUTUBE_AUDIO_FIRST_FORMAT =
+  "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio/best";
+
 function getPlaybackExtractionAttempts(
   url: string,
   audioProfile?: AudioProfileName | null
 ): PlaybackExtractionAttempt[] {
+  if (isSoundCloudUrl(url)) {
+    return [
+      {
+        label: "soundcloud-bestaudio",
+        format: "bestaudio/best",
+        useCookies: false,
+      },
+    ];
+  }
+
   if (!isYoutubeUrl(url)) {
     return [
       {
@@ -843,13 +1066,13 @@ function getPlaybackExtractionAttempts(
   const bestAudioAttempts: PlaybackExtractionAttempt[] = [
     {
       label: "youtube-bestaudio-cookies",
-      format: "bestaudio/best",
+      format: YOUTUBE_AUDIO_FIRST_FORMAT,
       useCookies: true,
       youtubePlayerClient: null,
     },
     {
       label: "youtube-bestaudio-public",
-      format: "bestaudio/best",
+      format: YOUTUBE_AUDIO_FIRST_FORMAT,
       useCookies: false,
       youtubePlayerClient: null,
     },
@@ -873,17 +1096,17 @@ function getPlaybackExtractionAttempts(
   const attempts =
     profile === "xbox"
       ? [
-          safeAttempts[0],
           bestAudioAttempts[0],
+          safeAttempts[0],
           safeAttempts[1],
           bestAudioAttempts[1],
         ]
       : [
-          qualityAttempts[0],
           bestAudioAttempts[0],
           safeAttempts[0],
-          qualityAttempts[1],
+          qualityAttempts[0],
           bestAudioAttempts[1],
+          qualityAttempts[1],
           safeAttempts[1],
         ];
 
@@ -946,6 +1169,9 @@ export async function getPlayableSource(
         {
           useCookies: attempt.useCookies,
           youtubePlayerClient: attempt.youtubePlayerClient,
+          timeoutMs: isSoundCloudUrl(normalized)
+            ? YTDLP_CONFIG.soundCloudPlaybackTimeoutMs
+            : undefined,
         }
       );
 

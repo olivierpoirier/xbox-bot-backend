@@ -42,7 +42,7 @@ function buildAudioArgs(ipcPath: string): string[] {
 
   if (!isVirtualAudioRoutingReady() || !routing.audioDevice) {
     throw new Error(
-      "Routage audio virtuel absent : MPV refuse de dÃ©marrer sans entrÃ©e virtuelle."
+      "Routage audio virtuel absent : MPV refuse de démarrer sans entrée virtuelle."
     );
   }
 

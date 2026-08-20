@@ -1,4 +1,3 @@
-//metrics.ts
 import { performance } from "node:perf_hooks";
 
 export type Span = {
@@ -34,6 +33,39 @@ export function pushMetrics(m: PlayMetrics) {
   console.log(`[metrics] push id=${m.id} spans=${m.spans.length}`);
 }
 
-export function getMetrics() {
-  return LAST;
+export type BackendMetric = {
+  id: string;
+  name: string;
+  ok: boolean;
+  durationMs: number;
+  at: number;
+  data?: Record<string, unknown>;
+};
+
+const BACKEND_LAST: BackendMetric[] = [];
+
+function nextMetricId(): string {
+  return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function recordBackendMetric(
+  name: string,
+  durationMs: number,
+  ok: boolean,
+  data?: Record<string, unknown>
+): void {
+  BACKEND_LAST.push({
+    id: nextMetricId(),
+    name,
+    ok,
+    durationMs: Math.round(durationMs),
+    at: Date.now(),
+    data,
+  });
+
+  while (BACKEND_LAST.length > 100) BACKEND_LAST.shift();
+}
+
+export function getMetrics(): BackendMetric[] {
+  return BACKEND_LAST;
 }

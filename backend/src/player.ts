@@ -20,6 +20,7 @@ import {
 import {
   getPlayableSource,
   normalizeUrl,
+  probeSingle,
   resolvePlayable,
   searchYoutubeVideo,
   type PlayableSource,
@@ -27,6 +28,7 @@ import {
 import { MPV_CONFIG, PLAYER_CONFIG } from "./config.js";
 import { isVirtualAudioRoutingReady } from "./utils.js";
 import type { AudioProfileName } from "./audioProfiles.js";
+import { isSoundCloudUrl } from "./platforms/index.js";
 
 let globalMpvHandle: MpvHandle | null = null;
 let isLooping = false;
@@ -230,7 +232,7 @@ function resetNowState(): void {
 export async function ensureMpvRunning(): Promise<MpvHandle> {
   if (!isVirtualAudioRoutingReady()) {
     throw new Error(
-      "Le routage audio virtuel n'est pas prÃªt : MPV ne sera pas dÃ©marrÃ© sur la sortie systÃ¨me."
+      "Le routage audio virtuel n'est pas prêt : MPV ne sera pas démarré sur la sortie système."
     );
   }
 
@@ -394,7 +396,10 @@ async function resolveSpotifyItem(item: QueueItem): Promise<boolean> {
   try {
     const query = item.url.replace("provider:spotify:", "").trim();
 
-    const result = await searchYoutubeVideo(query);
+    const result = await searchYoutubeVideo(query, {
+      expectedDurationSec: item.durationSec,
+      limit: 6,
+    });
 
     if (!result?.url) {
       throw new Error("No YouTube result found");
@@ -433,17 +438,38 @@ async function resolvePlaybackSource(
     console.warn("[player] resolvePlayable failed, trying fallback", err);
   }
 
-  try {
-    const fallback = await getPlayableSource(
-      normalized,
-      state.control.audioProfile
-    );
-    if (fallback) return fallback;
-  } catch (err) {
-    console.warn("[player] getDirectPlayableUrl failed", err);
-  }
+  const soundCloudFallback = await resolveSoundCloudFallbackSource(item);
+  if (soundCloudFallback) return soundCloudFallback;
 
   return null;
+}
+
+async function resolveSoundCloudFallbackSource(
+  item: QueueItem
+): Promise<PlayableSource | null> {
+  const normalized = normalizeUrl(item.url);
+  if (!isSoundCloudUrl(normalized)) return null;
+
+  try {
+    const metadata = await probeSingle(normalized);
+    const query = metadata.title?.trim();
+    if (!query || query.toLowerCase() === "soundcloud") return null;
+
+    console.warn(`[player] SoundCloud direct failed; trying YouTube for "${query}"`);
+
+    const found = await searchYoutubeVideo(query);
+    if (!found?.url) return null;
+
+    item.url = found.url;
+    item.title = metadata.title || found.title || item.title;
+    item.thumb = metadata.thumb || found.thumb || item.thumb;
+    item.durationSec = metadata.durationSec || found.durationSec || item.durationSec;
+
+    return getPlayableSource(found.url, state.control.audioProfile);
+  } catch (err) {
+    console.warn("[player] SoundCloud fallback failed", err);
+    return null;
+  }
 }
 
 /* ------------------- END TRACK ------------------- */
@@ -608,6 +634,7 @@ export async function playPrevious(onStateChange: () => void): Promise<void> {
   if (!previous) return;
 
   state.history = state.history.slice(1);
+  const currentHandle = playing?.handle ?? null;
 
   const previousClone: QueueItem = {
     ...previous,
@@ -639,8 +666,8 @@ export async function playPrevious(onStateChange: () => void): Promise<void> {
   onStateChange();
 
   try {
-    if (playing?.handle) {
-      await mpvStop(playing.handle);
+    if (currentHandle) {
+      await mpvStop(currentHandle);
     }
   } catch {}
 

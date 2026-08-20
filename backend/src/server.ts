@@ -1,13 +1,14 @@
 process.env.PLAY_DL_SKIP_PROMPT = "true";
 
 import "dotenv/config";
+import cors from "cors";
 import express from "express";
 import http from "http";
-import { Server as IOServer } from "socket.io";
+import { Server as IOServer, type Socket } from "socket.io";
 import path from "node:path";
 import play from "play-dl";
 
-import { APP_CONFIG, MPV_CONFIG } from "./config.js";
+import { APP_CONFIG, MPV_CONFIG, SECURITY_CONFIG } from "./config.js";
 import { normalizeAudioProfileName } from "./audioProfiles.js";
 import { state, nextId, playing, QueueItem } from "./types.js";
 import {
@@ -44,12 +45,38 @@ import {
   getRuntimeAudioRouting,
   isVirtualAudioRoutingReady,
 } from "./utils.js";
+import { getMetrics } from "./metrics.js";
 
 const app = express();
 const server = http.createServer(app);
 
+function originMatches(pattern: string, origin: string): boolean {
+  if (pattern === "*") return true;
+  if (!pattern.includes("*")) return pattern === origin;
+
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(`^${escaped.replace(/\*/g, ".*")}$`, "i");
+  return regex.test(origin);
+}
+
+function isOriginAllowed(origin?: string): boolean {
+  if (!origin || SECURITY_CONFIG.allowedOrigins.length === 0) return true;
+
+  return SECURITY_CONFIG.allowedOrigins.some((allowedOrigin) =>
+    originMatches(allowedOrigin, origin)
+  );
+}
+
+function resolveCorsOrigin(
+  origin: string | undefined,
+  callback: (err: Error | null, allow?: boolean) => void
+): void {
+  callback(null, isOriginAllowed(origin));
+}
+
 const io = new IOServer(server, {
-  cors: { origin: "*" },
+  cors: { origin: resolveCorsOrigin },
+  maxHttpBufferSize: SECURITY_CONFIG.maxSocketPayloadBytes,
   perMessageDeflate: false,
 });
 
@@ -60,6 +87,68 @@ let activeUsers = 0;
 let shutdownTimer: NodeJS.Timeout | null = null;
 const SHUTDOWN_DELAY = 60_000;
 
+type SocketRateState = {
+  windowStartedAt: number;
+  count: number;
+  mutedUntil: number;
+};
+
+const socketRateStates = new WeakMap<Socket, SocketRateState>();
+
+function readPayloadObject(payload: unknown): Record<string, unknown> {
+  return payload && typeof payload === "object"
+    ? (payload as Record<string, unknown>)
+    : {};
+}
+
+function sanitizeAddedBy(value: unknown): string {
+  return String(value || "anon").trim().slice(0, 32) || "anon";
+}
+
+function sanitizeClientRequestId(value: unknown): string | undefined {
+  return String(value || "").trim().slice(0, 120) || undefined;
+}
+
+function consumeSocketBudget(socket: Socket, action: string): boolean {
+  const now = Date.now();
+  const windowMs = SECURITY_CONFIG.socketRateLimitWindowMs;
+  const maxEvents = SECURITY_CONFIG.socketRateLimitMax;
+  const current =
+    socketRateStates.get(socket) ||
+    ({ windowStartedAt: now, count: 0, mutedUntil: 0 } satisfies SocketRateState);
+
+  if (now - current.windowStartedAt > windowMs) {
+    current.windowStartedAt = now;
+    current.count = 0;
+    current.mutedUntil = 0;
+  }
+
+  current.count += 1;
+  socketRateStates.set(socket, current);
+
+  if (current.count <= maxEvents) return true;
+
+  if (now >= current.mutedUntil) {
+    current.mutedUntil = now + 5_000;
+    socket.emit("toast", "Trop de commandes envoyées. Ralentis un peu.");
+    console.warn(
+      `[security] socket rate limit exceeded action=${action} id=${socket.id}`
+    );
+  }
+
+  return false;
+}
+
+io.use((socket, next) => {
+  if (!isOriginAllowed(socket.handshake.headers.origin)) {
+    next(new Error("Origin not allowed"));
+    return;
+  }
+
+  next();
+});
+
+app.use(cors({ origin: resolveCorsOrigin }));
 app.use(express.static(path.resolve(process.cwd(), "../frontend/dist")));
 
 /* --- HELPERS --- */
@@ -147,7 +236,7 @@ async function resolveSearchTextToVideoUrl(query: string): Promise<{
   durationSec?: number;
 } | null> {
   try {
-    return searchYoutubeVideo(query);
+    return await searchYoutubeVideo(query);
   } catch (err) {
     console.error("[search text resolve failed]", err);
     return null;
@@ -204,10 +293,25 @@ async function setupSpotify() {
 /* --- ROUTES HTTP --- */
 
 app.get("/health", (req, res) => {
+  const memory = process.memoryUsage();
+
   res.json({
     status: "ok",
     uptime: process.uptime(),
     activeUsers,
+    memory: {
+      rss: memory.rss,
+      heapUsed: memory.heapUsed,
+      heapTotal: memory.heapTotal,
+      external: memory.external,
+    },
+  });
+});
+
+app.get("/metrics", (req, res) => {
+  res.json({
+    status: "ok",
+    metrics: getMetrics(),
   });
 });
 
@@ -241,24 +345,31 @@ io.on("connection", (socket) => {
 
   socket.on(
     "play",
-    async (payload: { url?: string; addedBy?: string; clientRequestId?: string }) => {
+    async (payload: unknown) => {
       try {
+        if (!consumeSocketBudget(socket, "play")) return;
+
         if (!isVirtualAudioRoutingReady()) {
           socket.emit(
             "toast",
-            "Lecture bloquÃ©e : le routage audio virtuel du serveur n'est pas prÃªt."
+            "Lecture bloquée : le routage audio virtuel du serveur n'est pas prêt."
           );
           if (systemAudioWarning) socket.emit("error_system", systemAudioWarning);
           return;
         }
 
-        const raw = String(payload?.url || "").trim();
-        const addedBy = (payload.addedBy || "anon").slice(0, 32);
-        const clientRequestId =
-          String(payload?.clientRequestId || "").trim() || undefined;
+        const body = readPayloadObject(payload);
+        const raw = String(body.url || "").trim();
+        const addedBy = sanitizeAddedBy(body.addedBy);
+        const clientRequestId = sanitizeClientRequestId(body.clientRequestId);
 
         if (!raw) {
           socket.emit("toast", "Entrée vide.");
+          return;
+        }
+
+        if (raw.length > SECURITY_CONFIG.queueInputMaxLength) {
+          socket.emit("toast", "Entrée trop longue.");
           return;
         }
 
@@ -366,10 +477,15 @@ io.on("connection", (socket) => {
     }
   );
 
-  socket.on("command", async (payload: { cmd: string; arg?: any }) => {
+  socket.on("command", async (payload: unknown) => {
+    if (!consumeSocketBudget(socket, "command")) return;
+
+    const body = readPayloadObject(payload);
+    const cmd = String(body.cmd || "");
+    const arg = body.arg;
     const h = playing?.handle;
 
-    switch (payload.cmd) {
+    switch (cmd) {
       case "pause": {
         state.control.paused = true;
 
@@ -414,27 +530,27 @@ io.on("connection", (socket) => {
       }
 
       case "seek": {
-        const delta = Number(payload.arg) || 0;
+        const delta = Number(arg) || 0;
         await seekRelative(delta, broadcast);
         break;
       }
 
       case "seek_abs": {
-        if (h && typeof payload.arg === "number") {
+        if (h && typeof arg === "number") {
           if (state.now) {
-            state.now.positionOffsetSec = payload.arg;
+            state.now.positionOffsetSec = arg;
             state.now.startedAt = null;
             state.now.isBuffering = true;
           }
 
-          await mpvSeekAbsolute(h, payload.arg);
+          await mpvSeekAbsolute(h, arg);
           broadcast();
         }
         break;
       }
 
       case "repeat": {
-        const isRepeat = Boolean(payload.arg);
+        const isRepeat = Boolean(arg);
         state.control.repeat = isRepeat;
 
         if (h) {
@@ -444,7 +560,7 @@ io.on("connection", (socket) => {
       }
 
       case "audio_profile": {
-        const profile = normalizeAudioProfileName(String(payload.arg || ""));
+        const profile = normalizeAudioProfileName(String(arg || ""));
         state.control.audioProfile = profile;
 
         if (h) {
@@ -461,7 +577,7 @@ io.on("connection", (socket) => {
       }
 
       case "random_mode": {
-        state.control.randomMode = Boolean(payload.arg);
+        state.control.randomMode = Boolean(arg);
         warmQueueIfPlaying();
         break;
       }
@@ -474,12 +590,19 @@ io.on("connection", (socket) => {
         warmQueueIfPlaying();
         break;
       }
+
+      default: {
+        socket.emit("toast", "Commande inconnue.");
+        return;
+      }
     }
 
     broadcast();
   });
 
   socket.on("clear", async () => {
+    if (!consumeSocketBudget(socket, "clear")) return;
+
     state.queue.forEach((q) => {
       if (q.status === "queued" || q.status === "playing") {
         q.status = "done";
@@ -490,8 +613,12 @@ io.on("connection", (socket) => {
     broadcast();
   });
 
-  socket.on("remove_queue_item", async ({ id }: { id: string }) => {
-    const item = state.queue.find((q) => q.id === id);
+  socket.on("remove_queue_item", async (payload: unknown) => {
+    if (!consumeSocketBudget(socket, "remove_queue_item")) return;
+
+    const { id } = readPayloadObject(payload);
+    const normalizedId = String(id || "");
+    const item = state.queue.find((q) => q.id === normalizedId);
     if (!item) return;
 
     item.status = "done";
@@ -504,14 +631,24 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("reorder_queue", ({ ids }: { ids: string[] }) => {
-    const queuedItems = state.queue.filter((q) => q.status === "queued");
+  socket.on("reorder_queue", (payload: unknown) => {
+    if (!consumeSocketBudget(socket, "reorder_queue")) return;
 
-    const reordered: QueueItem[] = ids
+    const { ids } = readPayloadObject(payload);
+    if (!Array.isArray(ids)) return;
+    if (ids.length > SECURITY_CONFIG.reorderMaxItems) {
+      socket.emit("toast", "Trop d'éléments à réordonner.");
+      return;
+    }
+
+    const queuedItems = state.queue.filter((q) => q.status === "queued");
+    const normalizedIds = [...new Set(ids.map((id) => String(id)))];
+
+    const reordered: QueueItem[] = normalizedIds
       .map((id) => queuedItems.find((item) => item.id === id))
       .filter((item): item is QueueItem => Boolean(item));
 
-    const remaining = queuedItems.filter((q) => !ids.includes(q.id));
+    const remaining = queuedItems.filter((q) => !normalizedIds.includes(q.id));
     const completed = state.queue.filter((q) => q.status !== "queued");
 
     state.queue = [...completed, ...reordered, ...remaining];
@@ -521,7 +658,12 @@ io.on("connection", (socket) => {
 
   socket.on(
     "requeue_history_item",
-    ({ id, targetIndex }: { id: string; targetIndex?: number }) => {
+    (payload: unknown) => {
+      if (!consumeSocketBudget(socket, "requeue_history_item")) return;
+
+      const body = readPayloadObject(payload);
+      const id = String(body.id || "");
+      const targetIndex = body.targetIndex;
       const source = state.history.find((h) => h.id === id);
       if (!source) return;
 
@@ -555,7 +697,7 @@ io.on("connection", (socket) => {
   );
 
   socket.on("disconnect", () => {
-    activeUsers--;
+    activeUsers = Math.max(0, activeUsers - 1);
     console.log(`👤 Client déconnecté. Restants: ${activeUsers}`);
 
     if (activeUsers <= 0) {
@@ -619,7 +761,7 @@ async function bootstrap() {
 
   if (systemAudioWarning) {
     systemAudioWarning =
-      "Le routage audio virtuel n'est pas prÃªt. La lecture est bloquÃ©e pour Ã©viter toute sortie audio systÃ¨me.";
+      "Le routage audio virtuel n'est pas prêt. La lecture est bloquée pour éviter toute sortie audio système.";
   } else {
     ensureMpvRunning().catch(console.error);
   }
